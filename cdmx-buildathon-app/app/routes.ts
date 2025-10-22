@@ -1,3 +1,7 @@
-import { type RouteConfig, index } from "@react-router/dev/routes";
+import { index, route, type RouteConfig } from "@react-router/dev/routes";
 
-export default [index("routes/home.tsx")] satisfies RouteConfig;
+export default [
+  index("routes/_index.tsx"),
+  route("api/transcribe-stream", "routes/api.transcribe-stream.ts"),
+  route("api/transcribe-chunk", "routes/api.transcribe-chunk.ts"),
+] satisfies RouteConfig;
