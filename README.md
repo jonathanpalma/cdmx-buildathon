@@ -108,8 +108,10 @@ It integrates into the sales workflow, providing:
 The copilot has been redesigned from an overwhelming assistant to a focused, action-oriented tool:
 
 **Key Features:**
-- **Smart Message Batching**: Intelligently waits for complete sentences before analyzing (prevents premature calls with partial data like "May 28 til...")
-- **Fast Validation Layer**: Real-time data quality checks (<500ms) with agent hints for confirming ambiguous information
+- **Adaptive Timing System**: 5-tier intelligent processing (500ms urgent → 4s incomplete) prevents lag while ensuring completeness
+- **Race Condition Protection**: Request ID tracking prevents stale responses from overwriting fresh data
+- **Smart Message Batching**: Detects incomplete sentences and waits for full context (prevents "May 28 til..." premature calls)
+- **Fast Validation Layer**: Real-time data quality checks (<500ms) with agent hints for ambiguous information
 - **Confidence-Based Auto-Execution**: Actions with 95%+ confidence auto-execute after 3-second countdown
 - **Categorized UI**: Separated critical actions, background tasks, insights, and quick scripts
 - **MCP Tool Integration**: Direct connection to Palace API for instant operations

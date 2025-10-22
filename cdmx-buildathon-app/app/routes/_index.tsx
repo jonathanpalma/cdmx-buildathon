@@ -250,7 +250,7 @@ export default function Index() {
     }
   }, [agentState])
 
-  // Smart batching: Detect incomplete sentences and critical info patterns
+  // Smart batching: Detect incomplete sentences, critical info, and urgency
   const analyzeMessageCompleteness = useCallback((text: string) => {
     const lowerText = text.toLowerCase().trim()
 
@@ -275,7 +275,32 @@ export default function Index() {
 
     const hasCriticalInfo = criticalPatterns.some(pattern => pattern.test(lowerText))
 
-    return { isIncomplete, hasCriticalInfo }
+    // Urgency detection - process these FAST
+    const urgencyPatterns = [
+      /\b(urgent|asap|immediately|right\s+now|today)\b/i,
+      /\b(need\s+it|want\s+it)\s+(now|today|asap)/i,
+      /\b(leaving|departing)\s+(tomorrow|today|soon)/i,
+      /\b(running\s+out\s+of\s+time|time\s+sensitive)/i
+    ]
+
+    const isUrgent = urgencyPatterns.some(pattern => pattern.test(lowerText))
+
+    // Short confirmations - also process fast
+    const confirmationPatterns = [
+      /^\s*(yes|yeah|yep|yup|sure|okay|ok|correct|right|exactly)\s*$/i,
+      /^\s*(that('s|\s+is)\s+(correct|right|perfect))\s*$/i,
+      /^\s*(sounds?\s+(good|great|perfect))\s*$/i
+    ]
+
+    const isShortConfirmation = confirmationPatterns.some(pattern => pattern.test(lowerText)) &&
+                                text.split(' ').length <= 3
+
+    return {
+      isIncomplete,
+      hasCriticalInfo,
+      isUrgent,
+      isShortConfirmation
+    }
   }, [])
 
   // Call AI Agent with smart batching + debouncing
@@ -283,13 +308,16 @@ export default function Index() {
     // Add to pending messages
     pendingMessagesRef.current.push(newEntry)
 
-    // Analyze if this message seems incomplete
-    const { isIncomplete, hasCriticalInfo } = analyzeMessageCompleteness(newEntry.text)
+    // Analyze message characteristics
+    const { isIncomplete, hasCriticalInfo, isUrgent, isShortConfirmation } =
+      analyzeMessageCompleteness(newEntry.text)
 
     logger.debug("Agent message queued", {
       pendingCount: pendingMessagesRef.current.length,
       isIncomplete,
       hasCriticalInfo,
+      isUrgent,
+      isShortConfirmation,
       lastWords: newEntry.text.slice(-30)
     })
 
@@ -314,19 +342,38 @@ export default function Index() {
       }, 8000) // Max 8 seconds wait
     }
 
-    // Smart debounce timing based on message completeness
+    // 🚀 ADAPTIVE TIMING: Adjust based on message characteristics
     let debounceDelay = 2500 // Default: 2.5 seconds
 
-    if (isIncomplete) {
-      // Sentence seems incomplete - wait longer for rest of info
+    if (isUrgent) {
+      // URGENT requests - process almost immediately
+      debounceDelay = 500 // 0.5 seconds
+      logger.debug("🔥 URGENT_DETECTED - immediate processing", {
+        delay: debounceDelay,
+        text: newEntry.text.slice(0, 50)
+      })
+    } else if (isShortConfirmation) {
+      // Short confirmations - quick response expected
+      debounceDelay = 1000 // 1 second
+      logger.debug("✅ CONFIRMATION_DETECTED - fast response", {
+        delay: debounceDelay
+      })
+    } else if (isIncomplete && hasCriticalInfo) {
+      // Critical info but incomplete - wait for completion
+      debounceDelay = 3500 // 3.5 seconds
+      logger.debug("⏳ CRITICAL_INCOMPLETE - waiting for completion", {
+        delay: debounceDelay
+      })
+    } else if (isIncomplete) {
+      // General incomplete sentence - wait longer
       debounceDelay = 4000 // 4 seconds
-      logger.debug("⏳ Incomplete sentence detected - extending wait time", {
+      logger.debug("⏳ Incomplete sentence - extending wait time", {
         delay: debounceDelay
       })
     } else if (hasCriticalInfo && !isIncomplete) {
-      // Complete sentence with important info - process faster!
+      // Complete sentence with important info - process faster
       debounceDelay = 1500 // 1.5 seconds
-      logger.debug("⚡ Complete critical info detected - fast-tracking", {
+      logger.debug("⚡ Complete critical info - fast-tracking", {
         delay: debounceDelay
       })
     }
@@ -334,7 +381,8 @@ export default function Index() {
     // Debounce: wait for silence before calling agent
     debounceTimerRef.current = setTimeout(() => {
       logger.debug("Agent debounce timer triggered - executing", {
-        batchSize: pendingMessagesRef.current.length
+        batchSize: pendingMessagesRef.current.length,
+        finalDelay: debounceDelay
       })
       if (maxWaitTimerRef.current) {
         clearTimeout(maxWaitTimerRef.current)
