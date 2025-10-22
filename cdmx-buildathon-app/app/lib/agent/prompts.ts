@@ -129,7 +129,16 @@ Generate stages that tell the story of THIS specific conversation.`
  * Purpose: Create actionable suggestions for the agent
  */
 export function buildActionGenerationPrompt(state: AgentState): string {
-  return `Generate 2-3 recommended actions for the call center agent.
+  return `Generate 1-2 ACTIONABLE suggestions for the call center agent.
+
+CRITICAL RULES:
+1. Actions must be EXECUTABLE - they should DO something concrete
+2. Each action should either:
+   - Trigger a specific task (check availability, send email, create quote)
+   - Provide exact words to say (short script/phrase)
+   - Give a specific question to ask
+3. Only suggest if TRULY needed - empty array if conversation flowing naturally
+4. Make it clear what happens when the agent clicks the action
 
 CURRENT STAGE: ${state.currentStage}
 CUSTOMER PROFILE:
@@ -141,30 +150,59 @@ ${state.detectedIntents.join(", ")}
 LAST 3 MESSAGES:
 ${state.messages.slice(-3).map(m => `${m.speaker}: ${m.text}`).join("\n")}
 
-TASK: Suggest next actions for the agent to take.
+TASK: Suggest EXECUTABLE actions the agent can take RIGHT NOW.
 
 Respond with JSON:
 {
   "actions": [
     {
       "id": "action-1",
-      "label": "Clear, action-oriented label",
-      "description": "Brief explanation of what to do",
-      "priority": "critical" | "recommended" | "optional",
-      "confidence": 0.95,
-      "reasoning": "Why this action makes sense now"
+      "label": "Verb + Object (max 4 words)",
+      "description": "What happens when clicked (max 12 words)",
+      "priority": "critical" | "recommended",
+      "actionType": "script" | "task" | "question"
     }
   ],
-  "script": "Suggested exact words the agent can say",
-  "tips": ["Pro tip 1", "Pro tip 2"]
+  "reasoning": "ONE sentence context (max 20 words)",
+  "backgroundTasks": [
+    {
+      "id": "task-1",
+      "label": "Task name",
+      "type": "api_call" | "mcp_tool" | "data_lookup" | "calculation",
+      "status": "pending"
+    }
+  ]
 }
 
-Prioritize:
-- Critical: Must-do actions (get dates, check availability)
-- Recommended: Should-do actions (mention promotions, build rapport)
-- Optional: Nice-to-have (upsells, additional info)
+ACTION TYPES:
+- "script": Provides exact words to say. Label should be the phrase itself.
+  Example: { label: "Ask about travel dates", description: "Opens date picker for customer" }
+- "task": Executes a system action (check availability, send email, create quote)
+  Example: { label: "Check room availability", description: "Searches inventory for requested dates" }
+- "question": Suggests a specific question to ask
+  Example: { label: "Ask party size", description: "'How many adults and children?'" }
 
-Keep actions specific to current stage and customer needs.`
+ONLY include actions if:
+- Critical: Missing essential information (dates, party size, contact info)
+- Critical: Customer has objection/concern that needs addressing
+- Critical: Time-sensitive opportunity (limited availability, promo ending)
+- Recommended: Clear next step to progress conversation (send quote, check calendar)
+
+DO NOT include actions for:
+- Routine conversation flow (customer is already talking, agent is listening appropriately)
+- Generic suggestions (be friendly, use customer name - agent should know this)
+- Optional upsells when customer hasn't committed yet
+- Information already collected
+
+Keep it MINIMAL. Agent is listening to a call in real-time. Less is more.
+
+REASONING: Provide ONE concise sentence (max 20 words) explaining why this action matters NOW.
+
+BACKGROUND TASKS: Suggest tasks that can run in the background (API calls, data lookups):
+- Examples: "Check room availability", "Calculate pricing quote", "Look up customer history"
+- Only suggest if you have enough info (e.g., need dates to check availability)
+- These show the agent that AI is actively working for them
+- Keep to 0-2 tasks maximum`
 }
 
 /**

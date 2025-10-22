@@ -127,8 +127,12 @@ async function generateActions(
 
     const result = JSON.parse(response.content as string)
 
+    console.log(`[Agent] Generated ${(result.actions || []).length} actions, ${(result.backgroundTasks || []).length} background tasks`)
+
     return {
       nextActions: result.actions || [],
+      reasoning: result.reasoning || "",
+      backgroundTasks: result.backgroundTasks || [],
     }
   } catch (error) {
     console.error("[Agent] Action generation failed:", error)
@@ -212,6 +216,10 @@ function buildWorkflow() {
       healthScore: {
         reducer: (_current: any, update: any) => update,
         default: () => 75,
+      },
+      backgroundTasks: {
+        reducer: (_current: any, update: any) => update,
+        default: () => [],
       },
     },
   })

@@ -1,5 +1,5 @@
 import type { Route } from "./+types/_index";
-import { useState, useCallback, useMemo } from "react"
+import { useState, useCallback, useMemo, useRef, useEffect } from "react"
 import { AudioUpload } from "~/components/audio/audio-upload"
 import { AudioPlaybackSimulator } from "~/components/audio/audio-playback-simulator"
 import { LiveTranscriptImproved as LiveTranscript, type TranscriptEntry } from "~/components/audio/live-transcript-improved"
@@ -65,12 +65,24 @@ export default function Index() {
 
   // AI Agent state (replaces static currentStepData)
   const [agentState, setAgentState] = useState<Partial<AgentState>>({})
+  const [isAgentProcessing, setIsAgentProcessing] = useState(false)
+  const [forceUpdate, setForceUpdate] = useState(false) // Flag to force UI update
+  const [suggestionTimestamp, setSuggestionTimestamp] = useState<number>(0) // When current suggestion was generated
 
   // Agent call management (debouncing + cancellation)
   const abortControllerRef = useRef<AbortController | null>(null)
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null)
   const maxWaitTimerRef = useRef<NodeJS.Timeout | null>(null)
   const pendingMessagesRef = useRef<TranscriptEntry[]>([])
+
+  // Cleanup timers on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
+      if (maxWaitTimerRef.current) clearTimeout(maxWaitTimerRef.current)
+      if (abortControllerRef.current) abortControllerRef.current.abort()
+    }
+  }, [])
 
   // Conversation stages come directly from agent (dynamically generated)
   const stages = useMemo<ConversationStage[]>(() => {
@@ -111,17 +123,32 @@ export default function Index() {
     setAgentState({}) // Reset agent state
   }, [])
 
-  // Call AI Agent to analyze conversation and generate suggestions
-  const callAgent = useCallback(async (newEntry: TranscriptEntry) => {
+  // Execute agent call with accumulated messages
+  const executeAgentCall = useCallback(async (messages: TranscriptEntry[]) => {
+    // Cancel any in-flight request
+    if (abortControllerRef.current) {
+      console.log("[Agent] Cancelling previous request")
+      abortControllerRef.current.abort()
+    }
+
+    abortControllerRef.current = new AbortController()
+    setIsAgentProcessing(true)
+
     try {
+      // Get the last message (most recent)
+      const lastMessage = messages[messages.length - 1]
+
+      console.log(`[Agent] Executing with ${messages.length} accumulated message(s)`)
+
       const response = await fetch("/api/agent", {
+        signal: abortControllerRef.current.signal,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: {
-            speaker: newEntry.speaker,
-            text: newEntry.text,
-            timestamp: newEntry.timestamp,
+            speaker: lastMessage.speaker,
+            text: lastMessage.text,
+            timestamp: lastMessage.timestamp,
           },
           currentState: agentState,
         }),
@@ -129,15 +156,86 @@ export default function Index() {
 
       if (response.ok) {
         const { state } = await response.json()
-        setAgentState(state)
+        console.log("[Agent] Response received")
 
-        // Update UI with agent's analysis
-        setConversationHealth(state.healthScore || 75)
+        // Check if we should force update (manual refresh)
+        const shouldForceUpdate = forceUpdate
+
+        // Only update if we don't already have suggestions showing
+        // OR if the stage has progressed (important update)
+        // OR if manual refresh was clicked
+        const hasCurrentSuggestions = agentState.nextActions && agentState.nextActions.length > 0
+        const stageChanged = state.currentStage !== agentState.currentStage
+
+        if (!hasCurrentSuggestions || stageChanged || shouldForceUpdate) {
+          console.log("[Agent] Updating UI with new suggestions")
+          setAgentState(state)
+          setConversationHealth(state.healthScore || 75)
+          setSuggestionTimestamp(Date.now()) // Record when suggestion was shown
+          setForceUpdate(false) // Reset flag
+        } else {
+          console.log("[Agent] Keeping current suggestions visible (agent still working on them)")
+          // Update background state but don't change UI
+          // This keeps context fresh without overwhelming the agent
+          setAgentState(prev => ({
+            ...state,
+            nextActions: prev.nextActions, // Keep current actions visible
+            reasoning: prev.reasoning, // Keep current reasoning
+          }))
+          setConversationHealth(state.healthScore || 75)
+          // Don't update timestamp - keep showing age of current visible suggestion
+        }
       }
     } catch (error) {
-      console.error("Agent call failed:", error)
+      if (error instanceof Error && error.name === 'AbortError') {
+        console.log("[Agent] Request cancelled (newer message arrived)")
+        return
+      }
+      console.error("[Agent] Call failed:", error)
+    } finally {
+      setIsAgentProcessing(false)
     }
   }, [agentState])
+
+  // Call AI Agent with debouncing + cancellation
+  const callAgent = useCallback((newEntry: TranscriptEntry) => {
+    // Add to pending messages
+    pendingMessagesRef.current.push(newEntry)
+    console.log(`[Agent] Message queued (${pendingMessagesRef.current.length} pending)`)
+
+    // Cancel existing debounce timer
+    if (debounceTimerRef.current) {
+      console.log("[Agent] Resetting debounce timer")
+      clearTimeout(debounceTimerRef.current)
+    }
+
+    // Set up max wait timer (force execution after 8s even if still receiving messages)
+    if (!maxWaitTimerRef.current) {
+      console.log("[Agent] Starting max wait timer (8s)")
+      maxWaitTimerRef.current = setTimeout(() => {
+        console.log("[Agent] Max wait timer triggered - forcing execution")
+        if (debounceTimerRef.current) {
+          clearTimeout(debounceTimerRef.current)
+        }
+        const messages = [...pendingMessagesRef.current]
+        pendingMessagesRef.current = []
+        maxWaitTimerRef.current = null
+        executeAgentCall(messages)
+      }, 8000) // Max 8 seconds wait
+    }
+
+    // Debounce: wait 2.5s of silence before calling agent
+    debounceTimerRef.current = setTimeout(() => {
+      console.log("[Agent] Debounce timer triggered - executing")
+      if (maxWaitTimerRef.current) {
+        clearTimeout(maxWaitTimerRef.current)
+        maxWaitTimerRef.current = null
+      }
+      const messages = [...pendingMessagesRef.current]
+      pendingMessagesRef.current = []
+      executeAgentCall(messages)
+    }, 2500) // 2.5 second debounce
+  }, [executeAgentCall])
 
   // Handle transcript updates from playback
   const handleTranscriptUpdate = useCallback((event: any) => {
@@ -174,14 +272,14 @@ export default function Index() {
           confidence: (lastEntry.confidence! + event.confidence) / 2, // Average confidence
         }
 
-        // Call agent with merged message
-        callAgent(mergedEntry)
+        // DON'T call agent yet - we're still accumulating from same speaker
+        // The agent will be called when speaker changes or after a pause
 
         // Replace last entry with merged one
         return [...prev.slice(0, -1), mergedEntry]
       }
 
-      // Create new entry
+      // Create new entry (new speaker or time gap)
       const newEntry: TranscriptEntry = {
         id: `entry-${event.chunkIndex}-${event.timestamp}`,
         timestamp: event.timestamp,
@@ -193,23 +291,73 @@ export default function Index() {
 
       const newEntries = [...prev, newEntry]
 
-      // Call AI agent to analyze the new message
-      callAgent(newEntry)
+      // Call AI agent when speaker changes or significant gap
+      // This ensures we send complete thoughts, not fragments
+      if (lastEntry && lastEntry.speaker !== event.speaker) {
+        // Speaker changed - send the PREVIOUS speaker's complete message
+        callAgent(lastEntry)
+      } else if (!lastEntry) {
+        // First message - send it
+        callAgent(newEntry)
+      }
+      // If same speaker but time gap, the debounce will handle it
 
       return newEntries
     })
   }, [callAgent])
 
   const handleActionClick = useCallback((actionId: string) => {
+    console.log("Action clicked:", actionId)
+
+    // Clear the current suggestions to allow new ones to appear
+    // This signals "I'm working on this suggestion, show me the next one when ready"
+    setAgentState(prev => ({
+      ...prev,
+      nextActions: [],
+      reasoning: "",
+    }))
+
     // TODO: Implement action handling logic
     // This will trigger specific actions like checking availability, generating quotes, etc.
-    console.log("Action clicked:", actionId)
   }, [])
 
   const handleFeedback = useCallback((actionId: string, positive: boolean) => {
     // TODO: Track agent feedback for ML improvement
     console.log("Feedback:", actionId, positive ? "👍" : "👎")
   }, [])
+
+  const handleRefresh = useCallback(() => {
+    console.log("[Agent] Manual refresh requested")
+
+    // Set force update flag to bypass UI update logic
+    setForceUpdate(true)
+
+    // Clear current suggestions to allow new ones
+    setAgentState(prev => ({
+      ...prev,
+      nextActions: [],
+      reasoning: "",
+    }))
+
+    // Force-call agent immediately with last message (bypass debounce)
+    if (transcriptEntries.length > 0) {
+      const lastEntry = transcriptEntries[transcriptEntries.length - 1]
+
+      // Cancel any pending debounce timers
+      if (debounceTimerRef.current) {
+        clearTimeout(debounceTimerRef.current)
+        debounceTimerRef.current = null
+      }
+      if (maxWaitTimerRef.current) {
+        clearTimeout(maxWaitTimerRef.current)
+        maxWaitTimerRef.current = null
+      }
+
+      // Clear pending messages and execute immediately
+      pendingMessagesRef.current = []
+      executeAgentCall([lastEntry])
+    }
+  }, [transcriptEntries, executeAgentCall])
 
   return (
     <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
@@ -315,8 +463,12 @@ export default function Index() {
                 stages={stages}
                 currentStep={currentStepData}
                 conversationHealth={conversationHealth}
+                isProcessing={isAgentProcessing}
+                suggestionTimestamp={suggestionTimestamp}
+                backgroundTasks={agentState.backgroundTasks || []}
                 onActionClick={handleActionClick}
                 onFeedback={handleFeedback}
+                onRefresh={handleRefresh}
               />
             </div>
           </div>

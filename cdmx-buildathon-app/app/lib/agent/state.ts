@@ -43,6 +43,17 @@ export interface ConversationStage {
   completedAt?: number  // timestamp
 }
 
+export interface BackgroundTask {
+  id: string
+  label: string
+  type: "api_call" | "mcp_tool" | "data_lookup" | "calculation"
+  status: "pending" | "running" | "completed" | "failed"
+  progress?: number // 0-100
+  result?: string
+  startedAt?: number
+  completedAt?: number
+}
+
 export interface AgentState {
   // Conversation history (kept minimal - last 10 messages)
   messages: TranscriptMessage[]
@@ -67,6 +78,9 @@ export interface AgentState {
 
   // Conversation health score (0-100)
   healthScore: number
+
+  // Background tasks (API calls, MCP tools, etc.)
+  backgroundTasks: BackgroundTask[]
 }
 
 export const INITIAL_AGENT_STATE: AgentState = {
@@ -78,6 +92,7 @@ export const INITIAL_AGENT_STATE: AgentState = {
   nextActions: [],
   reasoning: "",
   healthScore: 75,
+  backgroundTasks: [],
 }
 
 /**
