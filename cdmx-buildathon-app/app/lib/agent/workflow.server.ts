@@ -13,7 +13,7 @@
 
 import { StateGraph, END, START } from "@langchain/langgraph"
 import { ChatAnthropic } from "@langchain/anthropic"
-import type { AgentState, TranscriptMessage } from "./state"
+import type { AgentState, TranscriptMessage, ExecutableAction } from "./state"
 import { INITIAL_AGENT_STATE } from "./state"
 import {
   SYSTEM_PROMPT,
@@ -111,8 +111,8 @@ async function manageConversationStages(
 }
 
 /**
- * Node 3: Generate Actions
- * Purpose: Create actionable suggestions for the call center agent
+ * Node 3: Generate Actions (v3 - Confidence-Based)
+ * Purpose: Generate categorized, confidence-scored actions
  */
 async function generateActions(
   state: AgentState
@@ -128,19 +128,104 @@ async function generateActions(
 
     const result = JSON.parse(response.content as string)
 
-    logger.debug("Agent generated actions", {
-      actionCount: (result.actions || []).length,
-      backgroundTaskCount: (result.backgroundTasks || []).length
+    // Apply confidence filtering to executable actions
+    const filteredActions = (result.executableActions || [])
+      .filter((action: any) => {
+        // Suppress low-confidence actions (< 70%)
+        if (action.confidence < 70) {
+          logger.debug("Suppressing low-confidence action", {
+            label: action.label,
+            confidence: action.confidence
+          })
+          return false
+        }
+        return true
+      })
+      .map((action: any) => {
+        // Set status based on confidence
+        let status: ExecutableAction["status"] = "suggested"
+
+        // Determine if requires confirmation
+        const requiresConfirmation =
+          action.riskLevel === "high" ||
+          action.confidence < 95
+
+        return {
+          ...action,
+          status,
+          requiresConfirmation,
+        }
+      })
+      .sort((a: any, b: any) => {
+        // Sort by confidence (highest first)
+        return b.confidence - a.confidence
+      })
+      .slice(0, 2) // Max 2 actions
+
+    // Filter quick scripts by confidence
+    const filteredScripts = (result.quickScripts || [])
+      .filter((script: any) => script.confidence >= 75)
+      .slice(0, 3) // Max 3 scripts
+
+    // Extract insights with defaults
+    const insights = {
+      detectedEmotion: result.insights?.detectedEmotion,
+      engagementLevel: result.insights?.engagementLevel,
+      healthScore: result.insights?.healthScore || state.healthScore || 75,
+      concerns: result.insights?.concerns || [],
+      strengths: result.insights?.strengths || [],
+      currentStage: result.insights?.currentStage || state.currentStage,
+      completedGoals: result.insights?.completedGoals || [],
+      missingInformation: result.insights?.missingInformation || [],
+    }
+
+    logger.debug("Agent generated categorized actions", {
+      executableCount: filteredActions.length,
+      scriptsCount: filteredScripts.length,
+      backgroundTaskCount: (result.backgroundTasks || []).length,
+      highestConfidence: filteredActions[0]?.confidence
     })
 
+    // Log any auto-executable actions
+    const autoExecutable = filteredActions.filter((a: any) =>
+      a.confidence >= 95 && !a.requiresConfirmation
+    )
+    if (autoExecutable.length > 0) {
+      logger.info("Auto-executable actions detected", {
+        count: autoExecutable.length,
+        actions: autoExecutable.map((a: any) => ({
+          label: a.label,
+          confidence: a.confidence,
+          toolName: a.toolName
+        }))
+      })
+    }
+
     return {
-      nextActions: result.actions || [],
-      reasoning: result.reasoning || "",
+      executableActions: filteredActions,
+      quickScripts: filteredScripts,
+      insights,
+      healthScore: insights.healthScore,
       backgroundTasks: result.backgroundTasks || [],
+
+      // Backward compatibility
+      nextActions: filteredActions,
+      reasoning: insights.concerns.join("; ") || insights.strengths[0] || "",
     }
   } catch (error) {
     logger.error("Agent action generation failed", { error })
-    return { nextActions: [] }
+    return {
+      executableActions: [],
+      quickScripts: [],
+      insights: {
+        healthScore: state.healthScore || 75,
+        concerns: ["Failed to generate actions"],
+        strengths: [],
+        currentStage: state.currentStage,
+        completedGoals: [],
+        missingInformation: [],
+      },
+    }
   }
 }
 
@@ -204,6 +289,25 @@ function buildWorkflow() {
       detectedIntents: {
         reducer: (_current: any, update: any) => update,
         default: () => [],
+      },
+      executableActions: {
+        reducer: (_current: any, update: any) => update,
+        default: () => [],
+      },
+      quickScripts: {
+        reducer: (_current: any, update: any) => update,
+        default: () => [],
+      },
+      insights: {
+        reducer: (_current: any, update: any) => update,
+        default: () => ({
+          healthScore: 75,
+          concerns: [],
+          strengths: [],
+          currentStage: "",
+          completedGoals: [],
+          missingInformation: [],
+        }),
       },
       nextActions: {
         reducer: (_current: any, update: any) => update,

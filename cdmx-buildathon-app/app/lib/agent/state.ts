@@ -5,12 +5,71 @@
  * The agent maintains this state across the conversation.
  */
 
-import type { NextAction } from "~/components/copilot"
-
 export interface TranscriptMessage {
   speaker: "agent" | "customer"
   text: string
   timestamp: number
+}
+
+/**
+ * Executable Action - High-priority, tool-based actions
+ */
+export interface ExecutableAction {
+  id: string
+  intent: string // e.g., "check_availability", "calculate_pricing"
+  label: string // "Check room availability"
+  description: string // "Search for rooms matching customer dates"
+
+  // Execution details
+  executionType: "mcp_tool" | "api_call" | "script" | "manual"
+  toolName?: string // e.g., "palace:checkAvailability"
+  parameters?: Record<string, any>
+
+  // Confidence & priority
+  confidence: number // 0-100
+  priority: "critical" | "high" | "medium"
+
+  // Auto-execution
+  requiresConfirmation: boolean
+  estimatedDuration?: number // seconds
+  riskLevel: "low" | "medium" | "high"
+
+  // Status tracking
+  status: "suggested" | "confirmed" | "executing" | "completed" | "failed"
+  result?: string
+  error?: string
+}
+
+/**
+ * Conversation Insights - Context awareness
+ */
+export interface ConversationInsight {
+  // Customer state
+  detectedEmotion?: "positive" | "neutral" | "frustrated" | "confused"
+  engagementLevel?: "high" | "medium" | "low"
+
+  // Conversation health
+  healthScore: number // 0-100
+  concerns: string[]
+  strengths: string[]
+
+  // Progress
+  currentStage: string
+  completedGoals: string[]
+  missingInformation: string[]
+}
+
+/**
+ * Quick Script - Pre-written communication template
+ */
+export interface QuickScript {
+  id: string
+  intent: string
+  label: string
+  script: string
+  confidence: number
+  priority: "high" | "medium" | "low"
+  whenToUse?: string // Contextual hint
 }
 
 export interface CustomerProfile {
@@ -48,10 +107,24 @@ export interface BackgroundTask {
   label: string
   type: "api_call" | "mcp_tool" | "data_lookup" | "calculation"
   status: "pending" | "running" | "completed" | "failed"
+
+  // Tool details
+  toolName?: string
+  parameters?: Record<string, any>
+
+  // Progress
   progress?: number // 0-100
-  result?: string
   startedAt?: number
+  estimatedCompletion?: number
   completedAt?: number
+
+  // Results
+  result?: {
+    summary: string
+    data?: any
+    suggestedAction?: ExecutableAction
+  }
+  error?: string
 }
 
 export interface AgentState {
@@ -70,13 +143,16 @@ export interface AgentState {
   // Detected intents in current message
   detectedIntents: string[]  // e.g., ["asking_about_dates", "price_objection"]
 
-  // Agent's recommended next actions (what we show in copilot)
-  nextActions: NextAction[]
+  // NEW: Categorized actions
+  executableActions: ExecutableAction[] // High-priority, tool-based actions
+  quickScripts: QuickScript[] // Communication templates
+  insights: ConversationInsight // Context awareness
 
-  // AI's reasoning (for transparency)
-  reasoning: string
+  // DEPRECATED: Old structure (kept for backward compatibility temporarily)
+  nextActions?: ExecutableAction[] // Maps to executableActions
+  reasoning?: string // Maps to insights.concerns/strengths
 
-  // Conversation health score (0-100)
+  // Conversation health score (kept at top level for easy access)
   healthScore: number
 
   // Background tasks (API calls, MCP tools, etc.)
@@ -89,8 +165,16 @@ export const INITIAL_AGENT_STATE: AgentState = {
   currentStage: "",
   customerProfile: {},
   detectedIntents: [],
-  nextActions: [],
-  reasoning: "",
+  executableActions: [],
+  quickScripts: [],
+  insights: {
+    healthScore: 75,
+    concerns: [],
+    strengths: [],
+    currentStage: "",
+    completedGoals: [],
+    missingInformation: [],
+  },
   healthScore: 75,
   backgroundTasks: [],
 }

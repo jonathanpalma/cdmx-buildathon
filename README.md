@@ -103,6 +103,25 @@ It integrates into the sales workflow, providing:
 4. **Seamless Handoff** – at call end, recommend and execute the best action (payment or follow-up).
 5. **Always-On Follow-Up** – schedule a 3-step automated recovery sequence to bring the customer back.
 
+### 🎯 AgentCopilot V2 - Intent-Driven Design
+
+The copilot has been redesigned from an overwhelming assistant to a focused, action-oriented tool:
+
+**Key Features:**
+- **Confidence-Based Auto-Execution**: Actions with 95%+ confidence auto-execute after 3-second countdown
+- **Categorized UI**: Separated critical actions, background tasks, insights, and quick scripts
+- **MCP Tool Integration**: Direct connection to Palace API for instant operations
+- **Real-Time Task Tracking**: Visual progress indicators for running operations
+- **Safety Guardrails**: Risk levels prevent dangerous auto-execution
+
+**Design Principles:**
+- Intent-driven (actions mapped to specific tools)
+- Tool-first (prioritize executable actions over generic tips)
+- Real-time optimized (max 1-2 actions shown at once)
+- Confidence-based (suppress uncertain suggestions <70%)
+
+📖 **[Full Documentation](./cdmx-buildathon-app/COPILOT_V2_SUMMARY.md)**
+
 ---
 
 ## 🧩 Architecture Overview

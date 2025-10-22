@@ -4,7 +4,8 @@ import { AudioUpload } from "~/components/audio/audio-upload"
 import { AudioPlaybackSimulator } from "~/components/audio/audio-playback-simulator"
 import { LiveTranscriptImproved as LiveTranscript, type TranscriptEntry } from "~/components/audio/live-transcript-improved"
 import { AgentCopilot, type CurrentStepData } from "~/components/copilot"
-import type { AgentState, ConversationStage } from "~/lib/agent/state"
+import { AgentCopilotV2 } from "~/components/copilot/agent-copilot-v2"
+import type { AgentState, ConversationStage, ExecutableAction } from "~/lib/agent/state"
 import { logger } from "~/lib/logger.client"
 import { validateEnvironment } from "~/lib/env-validation.server"
 
@@ -43,11 +44,19 @@ export default function Index() {
   const maxWaitTimerRef = useRef<NodeJS.Timeout | null>(null)
   const pendingMessagesRef = useRef<TranscriptEntry[]>([])
 
+  // Auto-execution state
+  const [autoExecuteCountdown, setAutoExecuteCountdown] = useState<{
+    actionId: string
+    remaining: number
+  } | null>(null)
+  const autoExecuteTimerRef = useRef<NodeJS.Timeout | null>(null)
+
   // Cleanup timers on unmount
   useEffect(() => {
     return () => {
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current)
       if (maxWaitTimerRef.current) clearTimeout(maxWaitTimerRef.current)
+      if (autoExecuteTimerRef.current) clearTimeout(autoExecuteTimerRef.current)
       if (abortControllerRef.current) abortControllerRef.current.abort()
     }
   }, [])
@@ -404,20 +413,235 @@ export default function Index() {
     processSequentialEntries()
   }, [callAgent])
 
+  // Execute MCP tool
+  const executeMCPAction = useCallback(async (action: ExecutableAction) => {
+    logger.info("Executing MCP action", {
+      actionId: action.id,
+      toolName: action.toolName,
+      confidence: action.confidence
+    })
+
+    // Update action status to executing
+    setAgentState(prev => ({
+      ...prev,
+      executableActions: prev.executableActions?.map(a =>
+        a.id === action.id ? { ...a, status: "executing" as const } : a
+      ),
+      // Add to background tasks
+      backgroundTasks: [
+        ...(prev.backgroundTasks || []),
+        {
+          id: `task-${Date.now()}`,
+          label: action.label,
+          type: action.executionType,
+          toolName: action.toolName,
+          parameters: action.parameters,
+          status: "running",
+          startedAt: Date.now(),
+        }
+      ]
+    }))
+
+    try {
+      // Call MCP execution API
+      const response = await fetch("/api/mcp/execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          actionId: action.id,
+          toolName: action.toolName,
+          parameters: action.parameters,
+        }),
+      })
+
+      const result = await response.json()
+
+      if (result.success) {
+        logger.info("MCP action succeeded", { actionId: action.id, summary: result.summary })
+
+        // Update action status to completed
+        setAgentState(prev => ({
+          ...prev,
+          executableActions: prev.executableActions?.map(a =>
+            a.id === action.id
+              ? { ...a, status: "completed" as const, result: result.summary }
+              : a
+          ),
+          // Update background task
+          backgroundTasks: prev.backgroundTasks?.map(t =>
+            t.label === action.label && t.status === "running"
+              ? {
+                  ...t,
+                  status: "completed",
+                  completedAt: Date.now(),
+                  result: {
+                    summary: result.summary,
+                    data: result.data,
+                  },
+                  progress: 100,
+                }
+              : t
+          ),
+        }))
+      } else {
+        logger.error("MCP action failed", { actionId: action.id, error: result.error })
+
+        // Update action status to failed
+        setAgentState(prev => ({
+          ...prev,
+          executableActions: prev.executableActions?.map(a =>
+            a.id === action.id
+              ? { ...a, status: "failed" as const, error: result.error }
+              : a
+          ),
+          // Update background task
+          backgroundTasks: prev.backgroundTasks?.map(t =>
+            t.label === action.label && t.status === "running"
+              ? {
+                  ...t,
+                  status: "failed",
+                  completedAt: Date.now(),
+                  error: result.error,
+                }
+              : t
+          ),
+        }))
+      }
+    } catch (error) {
+      logger.error("MCP action execution error", { actionId: action.id, error })
+
+      // Update action status to failed
+      setAgentState(prev => ({
+        ...prev,
+        executableActions: prev.executableActions?.map(a =>
+          a.id === action.id
+            ? { ...a, status: "failed" as const, error: String(error) }
+            : a
+        ),
+        // Update background task
+        backgroundTasks: prev.backgroundTasks?.map(t =>
+          t.label === action.label && t.status === "running"
+            ? {
+                ...t,
+                status: "failed",
+                completedAt: Date.now(),
+                error: String(error),
+              }
+            : t
+        ),
+      }))
+    }
+  }, [])
+
+  // Auto-execution logic - detect 95%+ confidence actions
+  useEffect(() => {
+    const autoExecutableAction = agentState.executableActions?.find(
+      action =>
+        action.confidence >= 95 &&
+        !action.requiresConfirmation &&
+        action.status === "suggested"
+    )
+
+    if (autoExecutableAction && !autoExecuteCountdown) {
+      logger.info("Auto-executable action detected", {
+        actionId: autoExecutableAction.id,
+        confidence: autoExecutableAction.confidence,
+      })
+
+      // Start 3-second countdown
+      let remaining = 3
+      setAutoExecuteCountdown({
+        actionId: autoExecutableAction.id,
+        remaining,
+      })
+
+      const countdownInterval = setInterval(() => {
+        remaining--
+        if (remaining > 0) {
+          setAutoExecuteCountdown({
+            actionId: autoExecutableAction.id,
+            remaining,
+          })
+        } else {
+          // Execute the action
+          clearInterval(countdownInterval)
+          setAutoExecuteCountdown(null)
+          executeMCPAction(autoExecutableAction)
+        }
+      }, 1000)
+
+      autoExecuteTimerRef.current = countdownInterval
+
+      // Return cleanup function
+      return () => {
+        if (autoExecuteTimerRef.current) {
+          clearInterval(autoExecuteTimerRef.current)
+          autoExecuteTimerRef.current = null
+        }
+      }
+    }
+  }, [agentState.executableActions, autoExecuteCountdown, executeMCPAction])
+
   const handleActionClick = useCallback((actionId: string) => {
     logger.info("Action clicked", { actionId })
 
-    // Clear the current suggestions to allow new ones to appear
-    // This signals "I'm working on this suggestion, show me the next one when ready"
+    // Find the action
+    const action = agentState.executableActions?.find(a => a.id === actionId)
+    if (!action) {
+      logger.warn("Action not found", { actionId })
+      return
+    }
+
+    // Cancel any auto-execution countdown
+    if (autoExecuteCountdown?.actionId === actionId) {
+      if (autoExecuteTimerRef.current) {
+        clearInterval(autoExecuteTimerRef.current)
+        autoExecuteTimerRef.current = null
+      }
+      setAutoExecuteCountdown(null)
+    }
+
+    // Execute the action
+    executeMCPAction(action)
+  }, [agentState.executableActions, autoExecuteCountdown, executeMCPAction])
+
+  const handleActionCancel = useCallback((actionId: string) => {
+    logger.info("Action cancelled", { actionId })
+
+    // Cancel auto-execution countdown if active
+    if (autoExecuteCountdown?.actionId === actionId) {
+      if (autoExecuteTimerRef.current) {
+        clearInterval(autoExecuteTimerRef.current)
+        autoExecuteTimerRef.current = null
+      }
+      setAutoExecuteCountdown(null)
+    }
+
+    // Remove the action from suggestions
     setAgentState(prev => ({
       ...prev,
-      nextActions: [],
-      reasoning: "",
+      executableActions: prev.executableActions?.filter(a => a.id !== actionId),
     }))
+  }, [autoExecuteCountdown])
 
-    // TODO: Implement action handling logic
-    // This will trigger specific actions like checking availability, generating quotes, etc.
-  }, [])
+  const handleScriptCopy = useCallback((scriptId: string) => {
+    logger.info("Script copy requested", { scriptId })
+
+    // Find the script
+    const script = agentState.quickScripts?.find(s => s.id === scriptId)
+    if (!script) {
+      logger.warn("Script not found", { scriptId })
+      return
+    }
+
+    // Copy to clipboard
+    navigator.clipboard.writeText(script.script).then(() => {
+      logger.info("Script copied to clipboard", { scriptId })
+      // TODO: Show toast notification
+    }).catch((error) => {
+      logger.error("Failed to copy script", { scriptId, error })
+    })
+  }, [agentState.quickScripts])
 
   const handleFeedback = useCallback((actionId: string, positive: boolean) => {
     // TODO: Track agent feedback for ML improvement
@@ -555,18 +779,18 @@ export default function Index() {
               </div>
             </div>
 
-            {/* Right Column: AI Copilot */}
+            {/* Right Column: AI Copilot V2 */}
             <div className="min-h-0">
-              <AgentCopilot
-                stages={stages}
-                currentStep={currentStepData}
-                conversationHealth={conversationHealth}
-                isProcessing={isAgentProcessing}
-                suggestionTimestamp={suggestionTimestamp}
+              <AgentCopilotV2
+                executableActions={agentState.executableActions || []}
+                insights={agentState.insights}
+                quickScripts={agentState.quickScripts || []}
                 backgroundTasks={agentState.backgroundTasks || []}
+                stages={stages}
                 onActionClick={handleActionClick}
-                onFeedback={handleFeedback}
-                onRefresh={handleRefresh}
+                onActionCancel={handleActionCancel}
+                onScriptCopy={handleScriptCopy}
+                isProcessing={isAgentProcessing}
               />
             </div>
           </div>

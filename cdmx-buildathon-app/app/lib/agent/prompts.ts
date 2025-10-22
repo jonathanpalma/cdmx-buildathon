@@ -125,84 +125,142 @@ Generate stages that tell the story of THIS specific conversation.`
 }
 
 /**
- * Action Generation Prompt
- * Purpose: Create actionable suggestions for the agent
+ * Action Generation Prompt (v3 - Intent-Driven, Confidence-Based)
+ * Purpose: Generate executable actions, insights, and scripts with confidence scores
  */
 export function buildActionGenerationPrompt(state: AgentState): string {
-  return `Generate 1-2 ACTIONABLE suggestions for the call center agent.
+  return `You are an AI copilot for a Palace Resorts call center agent. Analyze the conversation and generate CATEGORIZED actions with confidence scores.
 
-CRITICAL RULES:
-1. Actions must be EXECUTABLE - they should DO something concrete
-2. Each action should either:
-   - Trigger a specific task (check availability, send email, create quote)
-   - Provide exact words to say (short script/phrase)
-   - Give a specific question to ask
-3. Only suggest if TRULY needed - empty array if conversation flowing naturally
-4. Make it clear what happens when the agent clicks the action
-
-CURRENT STAGE: ${state.currentStage}
-CUSTOMER PROFILE:
-${JSON.stringify(state.customerProfile, null, 2)}
-
-DETECTED INTENTS:
-${state.detectedIntents.join(", ")}
-
-LAST 3 MESSAGES:
+CURRENT CONVERSATION STATE:
+Stage: ${state.currentStage}
+Customer Profile: ${JSON.stringify(state.customerProfile, null, 2)}
+Detected Intents: ${state.detectedIntents.join(", ")}
+Last 3 Messages:
 ${state.messages.slice(-3).map(m => `${m.speaker}: ${m.text}`).join("\n")}
 
-TASK: Suggest EXECUTABLE actions the agent can take RIGHT NOW.
+YOUR TASK: Generate actions in 3 categories:
 
-Respond with JSON:
+1. **EXECUTABLE ACTIONS** (Priority: MCP Tools > API Calls > Manual)
+   - ONLY if you can identify a SPECIFIC tool to call
+   - Must have CONFIDENCE score (0-100)
+   - Must identify the MCP tool name
+   - Extract all available parameters from customer profile
+
+2. **CONVERSATION INSIGHTS** (Context awareness, always shown)
+   - Customer emotional state
+   - Missing information
+   - Conversation health concerns/strengths
+
+3. **QUICK SCRIPTS** (Communication templates, collapsed by default)
+   - Pre-written responses for common situations
+   - Only suggest if confidence ≥ 75%
+
+AVAILABLE MCP TOOLS:
+- palace:checkAvailability - Search rooms (needs: dates, party size)
+- palace:searchProperties - Find properties (needs: preferences)
+- palace:calculateQuote - Generate quote (needs: property, dates, party size)
+- palace:sendPropertyEmail - Email property info (needs: property, customer email)
+- palace:sendQuoteEmail - Email quote (needs: quote ID, customer email)
+- palace:lookupCustomer - Find customer record (needs: email/phone/name)
+- palace:scheduleCallback - Schedule follow-up (needs: phone, time)
+
+CONFIDENCE SCORING RULES:
+- 95-100%: All required params available, clear intent, safe to auto-execute
+- 85-94%: All required params available, clear intent, needs confirmation
+- 70-84%: Some params missing OR intent somewhat ambiguous
+- <70%: Don't suggest (too uncertain)
+
+RESPOND WITH JSON:
 {
-  "actions": [
+  "executableActions": [
     {
-      "id": "action-1",
-      "label": "Verb + Object (max 4 words)",
-      "description": "What happens when clicked (max 12 words)",
-      "priority": "critical" | "recommended",
-      "actionType": "script" | "task" | "question"
+      "id": "exec-1",
+      "intent": "check_availability",
+      "label": "Check Room Availability",
+      "description": "Search for available rooms matching customer dates",
+      "executionType": "mcp_tool",
+      "toolName": "palace:checkAvailability",
+      "parameters": {
+        "checkIn": "2025-07-15",
+        "checkOut": "2025-07-20",
+        "adults": 2,
+        "children": 1
+      },
+      "confidence": 96,
+      "priority": "critical",
+      "requiresConfirmation": false,
+      "estimatedDuration": 3,
+      "riskLevel": "low"
     }
   ],
-  "reasoning": "ONE sentence context (max 20 words)",
+  "insights": {
+    "detectedEmotion": "positive" | "neutral" | "frustrated" | "confused",
+    "engagementLevel": "high" | "medium" | "low",
+    "healthScore": 85,
+    "concerns": ["Customer asking about specific dates but property not yet selected"],
+    "strengths": ["Good rapport established", "Customer highly engaged"],
+    "currentStage": "${state.currentStage}",
+    "completedGoals": ["Dates confirmed", "Party size confirmed"],
+    "missingInformation": ["Property preference", "Email address"]
+  },
+  "quickScripts": [
+    {
+      "id": "script-1",
+      "intent": "handle_price_objection",
+      "label": "Address Budget Concern",
+      "script": "I understand budget is important. Let me check if we have any special offers for your dates...",
+      "confidence": 78,
+      "priority": "high",
+      "whenToUse": "Customer mentioned price concerns"
+    }
+  ],
   "backgroundTasks": [
     {
       "id": "task-1",
-      "label": "Task name",
-      "type": "api_call" | "mcp_tool" | "data_lookup" | "calculation",
+      "label": "Checking room availability",
+      "type": "mcp_tool",
+      "toolName": "palace:checkAvailability",
+      "parameters": { "checkIn": "2025-07-15", "checkOut": "2025-07-20" },
       "status": "pending"
     }
   ]
 }
 
-ACTION TYPES:
-- "script": Provides exact words to say. Label should be the phrase itself.
-  Example: { label: "Ask about travel dates", description: "Opens date picker for customer" }
-- "task": Executes a system action (check availability, send email, create quote)
-  Example: { label: "Check room availability", description: "Searches inventory for requested dates" }
-- "question": Suggests a specific question to ask
-  Example: { label: "Ask party size", description: "'How many adults and children?'" }
+CRITICAL RULES:
+1. **ONLY suggest executableActions if**:
+   - You can identify the EXACT MCP tool to call
+   - You have extracted ALL required parameters from customer profile
+   - Confidence ≥ 70%
+   - Action is relevant RIGHT NOW (not future steps)
 
-ONLY include actions if:
-- Critical: Missing essential information (dates, party size, contact info)
-- Critical: Customer has objection/concern that needs addressing
-- Critical: Time-sensitive opportunity (limited availability, promo ending)
-- Recommended: Clear next step to progress conversation (send quote, check calendar)
+2. **Parameter extraction**:
+   - Extract from customerProfile fields (travelDates, partySize, preferences, etc.)
+   - Use actual values, not placeholders
+   - If missing required params, list in insights.missingInformation instead
 
-DO NOT include actions for:
-- Routine conversation flow (customer is already talking, agent is listening appropriately)
-- Generic suggestions (be friendly, use customer name - agent should know this)
-- Optional upsells when customer hasn't committed yet
-- Information already collected
+3. **Confidence calculation**:
+   - Start at 100%
+   - -5% for each missing optional parameter
+   - -15% for any ambiguity in intent
+   - -20% if tool might not be relevant yet
+   - Result must be ≥ 70% to suggest
 
-Keep it MINIMAL. Agent is listening to a call in real-time. Less is more.
+4. **Priority levels**:
+   - critical: Blocks conversation progress (missing essential data, objection)
+   - high: Clear next step (send quote, check availability)
+   - medium: Nice to have (upsells, optional info)
 
-REASONING: Provide ONE concise sentence (max 20 words) explaining why this action matters NOW.
+5. **Risk levels**:
+   - low: Data lookups, read-only operations (can auto-execute at 95%+)
+   - medium: Sending emails, scheduling (needs confirmation at 85%+)
+   - high: Financial actions, bookings (ALWAYS needs confirmation)
 
-BACKGROUND TASKS: Suggest tasks that can run in the background (API calls, data lookups):
-- Examples: "Check room availability", "Calculate pricing quote", "Look up customer history"
-- Only suggest if you have enough info (e.g., need dates to check availability)
-- These show the agent that AI is actively working for them
-- Keep to 0-2 tasks maximum`
+6. **Keep it minimal**:
+   - Max 2 executable actions
+   - Max 3 quick scripts
+   - If conversation flowing naturally, return empty arrays
+
+Remember: Less is more. Only suggest what's truly needed RIGHT NOW.`
 }
 
 /**
