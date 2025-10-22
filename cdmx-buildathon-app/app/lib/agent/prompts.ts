@@ -129,6 +129,17 @@ Generate stages that tell the story of THIS specific conversation.`
  * Purpose: Generate executable actions, insights, and scripts with confidence scores
  */
 export function buildActionGenerationPrompt(state: AgentState): string {
+  // Build validation context if there are issues
+  const validationContext = state.validationResult && state.validationResult.issues.length > 0
+    ? `\n⚠️ DATA VALIDATION ALERTS:
+${state.validationResult.issues.map(issue => `
+  [${issue.severity.toUpperCase()}] ${issue.field}: ${issue.message}
+  ${issue.agentHint ? `  💡 SUGGESTED CLARIFICATION: ${issue.agentHint}` : ''}
+`).join('\n')}
+
+IMPORTANT: If there are validation warnings with agent hints, PRIORITIZE asking these clarifying questions to confirm the data before executing tools.
+` : ''
+
   return `You are an AI copilot for a Palace Resorts call center agent. Analyze the conversation and generate CATEGORIZED actions with confidence scores.
 
 CURRENT CONVERSATION STATE:
@@ -137,6 +148,7 @@ Customer Profile: ${JSON.stringify(state.customerProfile, null, 2)}
 Detected Intents: ${state.detectedIntents.join(", ")}
 Last 3 Messages:
 ${state.messages.slice(-3).map(m => `${m.speaker}: ${m.text}`).join("\n")}
+${validationContext}
 
 YOUR TASK: Generate actions in 3 categories:
 

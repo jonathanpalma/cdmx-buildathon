@@ -5,4 +5,5 @@ export default [
   route("api/transcribe-stream", "routes/api.transcribe-stream.ts"),
   route("api/transcribe-chunk", "routes/api.transcribe-chunk.ts"),
   route("api/agent", "routes/api.agent.ts"),
+  route("api/mcp/execute", "routes/api.mcp.execute.ts"),
 ] satisfies RouteConfig;

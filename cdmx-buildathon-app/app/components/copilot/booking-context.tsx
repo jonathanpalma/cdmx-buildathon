@@ -6,9 +6,10 @@
  * 2. Updates as agent extracts information
  * 3. Can be manually edited/overridden by agent
  * 4. Serves as source of truth for MCP tool calls
+ * 5. Real-time validation with quick-fix suggestions
  */
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Button } from "~/components/ui/button"
 import { Card } from "~/components/ui/card"
 import { Badge } from "~/components/ui/badge"
@@ -22,22 +23,49 @@ import {
   Check,
   X,
   Sparkles,
+  AlertTriangle,
+  AlertCircle,
+  Info,
+  Zap,
 } from "lucide-react"
-import type { CustomerProfile } from "~/lib/agent/state"
+import type { CustomerProfile, TranscriptMessage } from "~/lib/agent/state"
+import { validateCustomerProfile, type ValidationIssue } from "~/lib/agent/validation"
 
 interface BookingContextProps {
   profile: CustomerProfile
   onUpdate?: (updates: Partial<CustomerProfile>) => void
+  recentMessages?: TranscriptMessage[]
   isReadOnly?: boolean
 }
 
 export function BookingContext({
   profile,
   onUpdate,
+  recentMessages = [],
   isReadOnly = false,
 }: BookingContextProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [editedProfile, setEditedProfile] = useState(profile)
+  const [validationIssues, setValidationIssues] = useState<ValidationIssue[]>([])
+
+  // Sync editedProfile with incoming profile updates (when not editing)
+  useEffect(() => {
+    if (!isEditing) {
+      setEditedProfile(profile)
+    }
+  }, [profile, isEditing])
+
+  // Run validation whenever profile changes
+  useEffect(() => {
+    const result = validateCustomerProfile(profile, recentMessages)
+    setValidationIssues(result.issues)
+  }, [profile, recentMessages])
+
+  const handleQuickFix = (issue: ValidationIssue) => {
+    if (issue.autoFix) {
+      onUpdate?.(issue.autoFix)
+    }
+  }
 
   const handleSave = () => {
     onUpdate?.(editedProfile)
@@ -127,6 +155,66 @@ export function BookingContext({
           </div>
         )}
       </div>
+
+      {/* Validation Issues - Quick Fix Alerts */}
+      {validationIssues.length > 0 && (
+        <div className="space-y-2 mb-3">
+          {validationIssues.map((issue, idx) => {
+            const getSeverityIcon = () => {
+              switch (issue.severity) {
+                case "error":
+                  return <AlertTriangle className="h-4 w-4 text-red-600" />
+                case "warning":
+                  return <AlertCircle className="h-4 w-4 text-orange-600" />
+                default:
+                  return <Info className="h-4 w-4 text-blue-600" />
+              }
+            }
+
+            const getSeverityColor = () => {
+              switch (issue.severity) {
+                case "error":
+                  return "bg-red-50 border-red-200 text-red-800"
+                case "warning":
+                  return "bg-orange-50 border-orange-200 text-orange-800"
+                default:
+                  return "bg-blue-50 border-blue-200 text-blue-800"
+              }
+            }
+
+            return (
+              <div key={idx} className={cn("p-2 border rounded-lg", getSeverityColor())}>
+                <div className="flex items-start gap-2">
+                  {getSeverityIcon()}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium">{issue.message}</p>
+                    {issue.suggestion && (
+                      <p className="text-xs mt-0.5 opacity-90">{issue.suggestion}</p>
+                    )}
+                    {issue.agentHint && (
+                      <div className="mt-2 p-2 bg-blue-50 border border-blue-200 rounded text-xs">
+                        <p className="font-medium text-blue-900 mb-1">💡 Agent Suggestion:</p>
+                        <p className="text-blue-800 italic">{issue.agentHint}</p>
+                      </div>
+                    )}
+                    {issue.autoFix && (
+                      <Button
+                        size="sm"
+                        onClick={() => handleQuickFix(issue)}
+                        className="h-6 text-xs mt-2 bg-white hover:bg-gray-50"
+                        variant="outline"
+                      >
+                        <Zap className="h-3 w-3 mr-1" />
+                        Quick Fix
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       <div className="space-y-3">
         {/* Guest Name */}

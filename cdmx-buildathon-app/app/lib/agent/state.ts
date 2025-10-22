@@ -179,6 +179,20 @@ export interface AgentState {
   // Extracted customer information
   customerProfile: CustomerProfile
 
+  // Fast validation results (client-side checks)
+  validationResult?: {
+    valid: boolean
+    issues: Array<{
+      field: string
+      severity: "error" | "warning" | "info"
+      message: string
+      suggestion?: string
+      agentHint?: string
+      autoFix?: Partial<CustomerProfile>
+    }>
+    confidence: number
+  }
+
   // Detected intents in current message
   detectedIntents: string[]  // e.g., ["asking_about_dates", "price_objection"]
 

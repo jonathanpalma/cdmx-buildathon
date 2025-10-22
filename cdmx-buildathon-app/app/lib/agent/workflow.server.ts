@@ -23,6 +23,7 @@ import {
   buildHealthScorePrompt,
 } from "./prompts"
 import { logger } from "../logger.server"
+import { validateCustomerProfile, type ValidationResult } from "./validation"
 
 // Initialize Claude Haiku (fast, cost-effective, excellent at structured output)
 const model = new ChatAnthropic({
@@ -87,9 +88,25 @@ async function analyzeIntent(state: AgentState): Promise<Partial<AgentState>> {
       ]
     }
 
+    // Run fast validation on extracted data
+    const validationResult = validateCustomerProfile(updatedProfile, state.messages)
+
+    if (validationResult.issues.length > 0) {
+      logger.info("⚠️ VALIDATION_ISSUES_DETECTED", {
+        issueCount: validationResult.issues.length,
+        hasErrors: !validationResult.valid,
+        issues: validationResult.issues.map(i => ({
+          field: i.field,
+          severity: i.severity,
+          message: i.message
+        }))
+      })
+    }
+
     return {
       detectedIntents: analysis.intents || [],
       customerProfile: updatedProfile,
+      validationResult,
     }
   } catch (error) {
     logger.error("❌ INTENT_ANALYSIS_ERROR", {

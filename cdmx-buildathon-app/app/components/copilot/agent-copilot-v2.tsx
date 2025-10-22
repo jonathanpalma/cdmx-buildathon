@@ -49,6 +49,7 @@ interface AgentCopilotV2Props {
   customerProfile?: CustomerProfile
   actionHistory?: ActionHistoryEntry[]
   operationContext?: OperationContext
+  recentMessages?: TranscriptMessage[]
 
   // Callbacks
   onActionClick?: (actionId: string) => void
@@ -74,6 +75,7 @@ export function AgentCopilotV2({
   customerProfile = {},
   actionHistory = [],
   operationContext = "booking",
+  recentMessages = [],
   onActionClick,
   onActionCancel,
   onActionConfirm,
@@ -146,6 +148,7 @@ export function AgentCopilotV2({
         <div className="p-4 bg-white border-b border-gray-200">
           <BookingContext
             profile={customerProfile}
+            recentMessages={recentMessages}
             onUpdate={onProfileUpdate}
           />
         </div>

@@ -38,11 +38,13 @@ export default function Index() {
   const [forceUpdate, setForceUpdate] = useState(false) // Flag to force UI update
   const [suggestionTimestamp, setSuggestionTimestamp] = useState<number>(0) // When current suggestion was generated
 
-  // Agent call management (debouncing + cancellation)
+  // Agent call management (debouncing + cancellation + race condition prevention)
   const abortControllerRef = useRef<AbortController | null>(null)
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null)
   const maxWaitTimerRef = useRef<NodeJS.Timeout | null>(null)
   const pendingMessagesRef = useRef<TranscriptEntry[]>([])
+  const requestIdRef = useRef<number>(0) // Monotonically increasing request ID
+  const lastProcessedRequestRef = useRef<number>(0) // Track last successfully processed request
 
   // Auto-execution state
   const [autoExecuteCountdown, setAutoExecuteCountdown] = useState<{
@@ -125,6 +127,9 @@ export default function Index() {
       return
     }
 
+    // Assign monotonically increasing request ID for race condition detection
+    const currentRequestId = ++requestIdRef.current
+
     abortControllerRef.current = new AbortController()
     setIsAgentProcessing(true)
 
@@ -132,8 +137,10 @@ export default function Index() {
       // Get the last message (most recent)
       const lastMessage = messages[messages.length - 1]
 
-      logger.debug("Agent executing with accumulated messages", {
-        messageCount: messages.length
+      logger.debug("🚀 Agent call started", {
+        requestId: currentRequestId,
+        messageCount: messages.length,
+        lastProcessed: lastProcessedRequestRef.current
       })
 
       const response = await fetch("/api/agent", {
@@ -147,11 +154,32 @@ export default function Index() {
             timestamp: lastMessage.timestamp,
           },
           currentState: agentState,
+          requestId: currentRequestId, // Include request ID in payload
         }),
       })
 
       if (response.ok) {
         const { state } = await response.json()
+
+        // 🛡️ RACE CONDITION PROTECTION
+        // Only apply response if this is the latest request
+        if (currentRequestId < lastProcessedRequestRef.current) {
+          logger.warn("⚠️ STALE_RESPONSE_DISCARDED", {
+            responseRequestId: currentRequestId,
+            latestProcessed: lastProcessedRequestRef.current,
+            messageCount: messages.length,
+            reason: "Older response arrived after newer one was processed"
+          })
+          return // Discard this stale response
+        }
+
+        // Update last processed request ID
+        lastProcessedRequestRef.current = currentRequestId
+
+        logger.info("✅ RESPONSE_ACCEPTED", {
+          requestId: currentRequestId,
+          messageCount: messages.length
+        })
 
         // Check if we should force update (manual refresh)
         const shouldForceUpdate = forceUpdate
@@ -168,6 +196,7 @@ export default function Index() {
                              shouldForceUpdate ? "manual_refresh" : "new_suggestions"
 
         logger.info("📊 UI_UPDATE_DECISION", {
+          requestId: currentRequestId,
           willUpdate,
           reason: updateReason,
           before: {
@@ -199,6 +228,7 @@ export default function Index() {
           setForceUpdate(false) // Reset flag
         } else {
           logger.info("📌 KEEPING_CURRENT_UI", {
+            requestId: currentRequestId,
             reason: "Actions still relevant, updating background only"
           })
           // Update insights and context but keep current actions visible
@@ -220,12 +250,47 @@ export default function Index() {
     }
   }, [agentState])
 
-  // Call AI Agent with debouncing + cancellation
+  // Smart batching: Detect incomplete sentences and critical info patterns
+  const analyzeMessageCompleteness = useCallback((text: string) => {
+    const lowerText = text.toLowerCase().trim()
+
+    // Incomplete sentence indicators
+    const incompletePatterns = [
+      /\b(til|till|until|to|through|and|or|with|from)\s*$/i,  // Ends with connector
+      /\b(may|june|july|august|april|march|january|february|september|october|november|december)\s+\d{1,2}\s*$/i,  // Date started but not complete
+      /\d{1,2}(st|nd|rd|th)?\s*$/i,  // Number at end (might be followed by more info)
+      /\b(check\s*in|checking\s*in|arrive|arriving)\s*$/i,  // Started talking about dates
+      /\b(adults?|children?|kids?|people?|guests?)\s*$/i,  // Started party size info
+    ]
+
+    const isIncomplete = incompletePatterns.some(pattern => pattern.test(lowerText))
+
+    // Critical info patterns that suggest important data is being shared
+    const criticalPatterns = [
+      /\b(may|june|july|august|april|march|january|february|september|october|november|december)\s+\d{1,2}/i,  // Date mention
+      /\d{1,2}(st|nd|rd|th)/i,  // Ordinal dates
+      /\b\d+\s+(adults?|children?|kids?|people?|guests?)\b/i,  // Party size
+      /\$([\d,]+)/i,  // Price/budget
+    ]
+
+    const hasCriticalInfo = criticalPatterns.some(pattern => pattern.test(lowerText))
+
+    return { isIncomplete, hasCriticalInfo }
+  }, [])
+
+  // Call AI Agent with smart batching + debouncing
   const callAgent = useCallback((newEntry: TranscriptEntry) => {
     // Add to pending messages
     pendingMessagesRef.current.push(newEntry)
+
+    // Analyze if this message seems incomplete
+    const { isIncomplete, hasCriticalInfo } = analyzeMessageCompleteness(newEntry.text)
+
     logger.debug("Agent message queued", {
-      pendingCount: pendingMessagesRef.current.length
+      pendingCount: pendingMessagesRef.current.length,
+      isIncomplete,
+      hasCriticalInfo,
+      lastWords: newEntry.text.slice(-30)
     })
 
     // Cancel existing debounce timer
@@ -249,9 +314,28 @@ export default function Index() {
       }, 8000) // Max 8 seconds wait
     }
 
-    // Debounce: wait 2.5s of silence before calling agent
+    // Smart debounce timing based on message completeness
+    let debounceDelay = 2500 // Default: 2.5 seconds
+
+    if (isIncomplete) {
+      // Sentence seems incomplete - wait longer for rest of info
+      debounceDelay = 4000 // 4 seconds
+      logger.debug("⏳ Incomplete sentence detected - extending wait time", {
+        delay: debounceDelay
+      })
+    } else if (hasCriticalInfo && !isIncomplete) {
+      // Complete sentence with important info - process faster!
+      debounceDelay = 1500 // 1.5 seconds
+      logger.debug("⚡ Complete critical info detected - fast-tracking", {
+        delay: debounceDelay
+      })
+    }
+
+    // Debounce: wait for silence before calling agent
     debounceTimerRef.current = setTimeout(() => {
-      logger.debug("Agent debounce timer triggered - executing")
+      logger.debug("Agent debounce timer triggered - executing", {
+        batchSize: pendingMessagesRef.current.length
+      })
       if (maxWaitTimerRef.current) {
         clearTimeout(maxWaitTimerRef.current)
         maxWaitTimerRef.current = null
@@ -259,8 +343,8 @@ export default function Index() {
       const messages = [...pendingMessagesRef.current]
       pendingMessagesRef.current = []
       executeAgentCall(messages)
-    }, 2500) // 2.5 second debounce
-  }, [executeAgentCall])
+    }, debounceDelay)
+  }, [executeAgentCall, analyzeMessageCompleteness])
 
   // Buffer for handling out-of-order responses
   const pendingTranscriptsRef = useRef<Map<number, any>>(new Map())
