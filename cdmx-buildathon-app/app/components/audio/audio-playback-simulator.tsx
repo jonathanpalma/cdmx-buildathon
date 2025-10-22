@@ -204,13 +204,26 @@ export function AudioPlaybackSimulator({
               }
             }
 
+            // Assign sequence number BEFORE analysis (so skipped chunks don't create gaps)
+            const currentSequence = sequenceNumberRef.current++
+            const currentChunk = chunkIndexRef.current++
+
             // Analyze the chunk to determine what to send
             const analysis = analyzeAudioChannels(chunkBuffer)
 
             // Skip completely silent chunks
             if (analysis.overall.isSilence) {
-              console.log(`Chunk ${chunkIndexRef.current}: Silence detected, skipping`)
-              chunkIndexRef.current++
+              console.log(`Chunk ${currentChunk} (seq ${currentSequence}): Silence detected, skipping`)
+              // Send empty event to keep sequence continuous
+              onTranscriptUpdate?.({
+                timestamp: startTime,
+                text: "",
+                speaker: "agent",
+                confidence: 0,
+                chunkIndex: currentChunk,
+                sequenceNumber: currentSequence,
+                isEmpty: true,
+              })
               return
             }
 
@@ -227,27 +240,24 @@ export function AudioPlaybackSimulator({
               // Only agent speaking - send left channel only
               wavBlob = monoAudioBufferToWav(chunkBuffer, 0)
               channelStrategy = 'mono-left'
-              console.log(`Chunk ${chunkIndexRef.current}: Agent only (L: ${analysis.leftChannel?.rms.toFixed(4)}, R: ${analysis.rightChannel?.rms.toFixed(4)})`)
+              console.log(`Chunk ${currentChunk} (seq ${currentSequence}): Agent only (L: ${analysis.leftChannel?.rms.toFixed(4)}, R: ${analysis.rightChannel?.rms.toFixed(4)})`)
             } else if (analysis.overall.dominantChannel === 'right') {
               // Only customer speaking - send right channel only
               wavBlob = monoAudioBufferToWav(chunkBuffer, 1)
               channelStrategy = 'mono-right'
-              console.log(`Chunk ${chunkIndexRef.current}: Customer only (L: ${analysis.leftChannel?.rms.toFixed(4)}, R: ${analysis.rightChannel?.rms.toFixed(4)})`)
+              console.log(`Chunk ${currentChunk} (seq ${currentSequence}): Customer only (L: ${analysis.leftChannel?.rms.toFixed(4)}, R: ${analysis.rightChannel?.rms.toFixed(4)})`)
             } else {
               // Both speakers active (overlapping speech) - send stereo for Deepgram to handle
               wavBlob = audioBufferToWav(chunkBuffer)
               channelStrategy = 'stereo'
-              console.log(`Chunk ${chunkIndexRef.current}: Both speakers (L: ${analysis.leftChannel?.rms.toFixed(4)}, R: ${analysis.rightChannel?.rms.toFixed(4)})`)
+              console.log(`Chunk ${currentChunk} (seq ${currentSequence}): Both speakers (L: ${analysis.leftChannel?.rms.toFixed(4)}, R: ${analysis.rightChannel?.rms.toFixed(4)})`)
             }
-
-            // Assign sequence number for ordering responses
-            const currentSequence = sequenceNumberRef.current++
 
             // Send chunk to STT endpoint
             const formData = new FormData()
-            formData.append("audio", wavBlob, `chunk-${chunkIndexRef.current}.wav`)
+            formData.append("audio", wavBlob, `chunk-${currentChunk}.wav`)
             formData.append("timestamp", startTime.toString())
-            formData.append("chunkIndex", chunkIndexRef.current.toString())
+            formData.append("chunkIndex", currentChunk.toString())
             formData.append("sequenceNumber", currentSequence.toString())
             formData.append("channelStrategy", channelStrategy)
             if (detectedSpeaker) {
@@ -269,20 +279,18 @@ export function AudioPlaybackSimulator({
                     text: result.text || "",
                     speaker: result.speaker || detectedSpeaker || "agent",
                     confidence: result.confidence,
-                    chunkIndex: chunkIndexRef.current,
+                    chunkIndex: currentChunk,
                     sequenceNumber: currentSequence,
                     isEmpty: result.isEmpty || false,
                     segments: result.segments, // Pass through speaker segments
                   })
                 } else {
-                  console.error(`Failed to transcribe chunk ${chunkIndexRef.current}:`, response.statusText)
+                  console.error(`Failed to transcribe chunk ${currentChunk}:`, response.statusText)
                 }
               })
               .catch((error) => {
-                console.error(`Error transcribing chunk ${chunkIndexRef.current}:`, error)
+                console.error(`Error transcribing chunk ${currentChunk}:`, error)
               })
-
-            chunkIndexRef.current++
           } catch (error) {
             console.error("Error processing audio chunk:", error)
           }

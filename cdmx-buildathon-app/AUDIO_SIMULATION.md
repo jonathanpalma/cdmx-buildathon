@@ -466,13 +466,30 @@ Supported in all modern browsers (Chrome, Firefox, Safari, Edge).
 
 **Solution:** Add Deepgram or OpenAI API key to `.env` file.
 
-### Transcript not updating
+### Transcript not updating / stops after a few messages
+
+**Causes:**
+1. **Sequence buffer deadlock** - Buffer waiting for missing sequence numbers
+2. API errors not being logged
+3. Silent chunks creating sequence gaps
 
 **Solution:**
-- Check browser console for errors
-- Ensure `/api/transcribe-chunk` endpoint is accessible
-- Verify API key is valid
-- Check that audio file is being properly decoded
+- **Check browser console** for sequence buffer logs:
+  - Look for "Sequence buffer status" messages
+  - Check if `gap` is > 0 (indicates buffer waiting for missing sequence)
+  - Look for "nextExpected" vs "buffered" sequences
+
+**Fixed in v2.1:**
+- Silent chunks now emit empty events to maintain sequence continuity
+- Sequence numbers assigned BEFORE silence detection (prevents gaps)
+- Added detailed logging for debugging sequence issues
+
+**If issue persists:**
+1. Open browser dev tools and check console
+2. Look for error messages from `/api/transcribe-chunk`
+3. Verify API key is valid (Deepgram or OpenAI)
+4. Check that audio file is being properly decoded
+5. Try restarting playback from beginning
 
 ### Audio won't play
 

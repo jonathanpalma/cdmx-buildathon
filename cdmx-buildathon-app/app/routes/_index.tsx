@@ -217,23 +217,48 @@ export default function Index() {
   const handleTranscriptUpdate = useCallback((event: any) => {
     setCurrentTime(event.timestamp)
 
-    // Skip empty transcriptions (silence or API returned no text)
-    if (!event.text || !event.text.trim() || event.isEmpty) {
-      return
-    }
-
     // Handle sequence-based ordering to prevent race conditions
     const sequenceNumber = event.sequenceNumber ?? event.chunkIndex
 
-    // Add to pending buffer
-    pendingTranscriptsRef.current.set(sequenceNumber, event)
+    logger.debug("Transcript event received", {
+      sequence: sequenceNumber,
+      chunkIndex: event.chunkIndex,
+      isEmpty: event.isEmpty,
+      textLength: event.text?.length || 0,
+      speaker: event.speaker,
+      nextExpected: nextExpectedSequenceRef.current,
+      bufferSize: pendingTranscriptsRef.current.size
+    })
+
+    // Skip empty transcriptions (silence or API returned no text)
+    // BUT still process them to maintain sequence continuity
+    if (!event.text || !event.text.trim() || event.isEmpty) {
+      logger.debug("Empty transcript, advancing sequence", { sequence: sequenceNumber })
+      // Add to buffer to maintain sequence continuity
+      pendingTranscriptsRef.current.set(sequenceNumber, { ...event, isEmpty: true })
+    } else {
+      // Add to pending buffer
+      pendingTranscriptsRef.current.set(sequenceNumber, event)
+    }
 
     // Process all sequential entries starting from next expected
     const processSequentialEntries = () => {
+      let processedCount = 0
       while (pendingTranscriptsRef.current.has(nextExpectedSequenceRef.current)) {
         const nextEvent = pendingTranscriptsRef.current.get(nextExpectedSequenceRef.current)!
+
+        // Skip processing empty events, just advance the sequence
+        if (nextEvent.isEmpty || !nextEvent.text || !nextEvent.text.trim()) {
+          logger.debug("Skipping empty sequence", {
+            sequence: nextExpectedSequenceRef.current
+          })
+          pendingTranscriptsRef.current.delete(nextExpectedSequenceRef.current)
+          nextExpectedSequenceRef.current++
+          continue
+        }
         pendingTranscriptsRef.current.delete(nextExpectedSequenceRef.current)
         nextExpectedSequenceRef.current++
+        processedCount++
 
         // Add to transcript
         setTranscriptEntries((prev) => {
@@ -354,6 +379,24 @@ export default function Index() {
           // If same speaker but time gap, the debounce will handle it
 
           return newEntries
+        })
+      }
+
+      if (processedCount > 0) {
+        logger.debug("Processed sequential entries", {
+          count: processedCount,
+          nextExpected: nextExpectedSequenceRef.current,
+          remainingBuffer: pendingTranscriptsRef.current.size
+        })
+      }
+
+      // Log buffer state if there are pending items
+      if (pendingTranscriptsRef.current.size > 0) {
+        const bufferedSequences = Array.from(pendingTranscriptsRef.current.keys()).sort((a, b) => a - b)
+        logger.debug("Sequence buffer status", {
+          nextExpected: nextExpectedSequenceRef.current,
+          buffered: bufferedSequences,
+          gap: bufferedSequences[0] - nextExpectedSequenceRef.current
         })
       }
     }
