@@ -86,6 +86,9 @@ export async function action({ request }: ActionFunctionArgs) {
     const audioBlob = formData.get("audio") as File | null
     const timestamp = formData.get("timestamp") as string
     const chunkIndex = formData.get("chunkIndex") as string
+    const sequenceNumber = formData.get("sequenceNumber") as string | null
+    const channelStrategy = formData.get("channelStrategy") as string | null
+    const detectedSpeaker = formData.get("detectedSpeaker") as string | null
 
     if (!audioBlob) {
       return Response.json({ error: "No audio file provided" }, { status: 400 })
@@ -94,6 +97,9 @@ export async function action({ request }: ActionFunctionArgs) {
     logger.debug("Processing audio chunk", {
       chunkIndex,
       timestamp,
+      sequenceNumber,
+      channelStrategy,
+      detectedSpeaker,
       sizeKB: (audioBlob.size / 1024).toFixed(2)
     })
 
@@ -104,9 +110,11 @@ export async function action({ request }: ActionFunctionArgs) {
     const result = await transcribeAudio(blob, "auto")
 
     const currentChunkIndex = parseInt(chunkIndex, 10)
+    const currentSequence = sequenceNumber ? parseInt(sequenceNumber, 10) : currentChunkIndex
 
     logger.debug("Transcription complete for chunk", {
       chunkIndex,
+      sequenceNumber: currentSequence,
       textLength: result.text.length,
       speaker: result.speaker,
       confidence: result.confidence,
@@ -120,9 +128,10 @@ export async function action({ request }: ActionFunctionArgs) {
       return Response.json({
         timestamp: parseFloat(timestamp),
         text: "",
-        speaker: "agent",
+        speaker: detectedSpeaker || "agent",
         confidence: 0,
         chunkIndex: currentChunkIndex,
+        sequenceNumber: currentSequence,
         words: [],
         isEmpty: true,
       })
@@ -131,15 +140,24 @@ export async function action({ request }: ActionFunctionArgs) {
     // Determine speaker based on available information
     let speaker: "agent" | "customer"
 
-    if (result.speaker !== undefined) {
-      // Deepgram provides speaker diarization - use it
+    // Priority 1: Use speaker detected from channel analysis (most accurate for stereo)
+    if (detectedSpeaker === "agent" || detectedSpeaker === "customer") {
+      speaker = detectedSpeaker as "agent" | "customer"
+      logger.debug("Using channel-based speaker detection", {
+        channelStrategy,
+        detectedSpeaker: speaker
+      })
+    }
+    // Priority 2: Deepgram provides speaker diarization (for stereo "both" or mono)
+    else if (result.speaker !== undefined) {
       speaker = mapSpeakerToRole(result.speaker)
       logger.debug("Using Deepgram diarization", {
         deepgramSpeaker: result.speaker,
         mappedRole: speaker
       })
-    } else {
-      // Whisper doesn't provide diarization - use heuristic
+    }
+    // Priority 3: Whisper doesn't provide diarization - use heuristic
+    else {
       speaker = inferSpeakerForWhisper(result.text, currentChunkIndex)
       logger.debug("Using heuristic diarization", {
         speaker,
@@ -153,7 +171,9 @@ export async function action({ request }: ActionFunctionArgs) {
       speaker,
       confidence: result.confidence,
       chunkIndex: currentChunkIndex,
+      sequenceNumber: currentSequence,
       words: result.words,
+      channelStrategy,
       deepgramSpeaker: result.speaker, // Include raw speaker ID for debugging
     })
   } catch (error) {

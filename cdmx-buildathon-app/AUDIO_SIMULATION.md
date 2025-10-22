@@ -144,13 +144,21 @@ Audio player with real-time audio chunk extraction and transcription.
 **How it works:**
 1. Decodes uploaded audio file into an AudioBuffer using Web Audio API
 2. As playback progresses, extracts 2-3 second chunks of raw audio
-3. **Preserves stereo audio**: If the source is stereo (2 channels), keeps both channels separate
-   - Common in call recordings: Agent on left channel, Customer on right channel
-   - Deepgram's multichannel processing uses channel separation for better diarization
-4. Converts each chunk to WAV format (preserving mono/stereo)
-5. POSTs each chunk to `/api/transcribe-chunk` endpoint
-6. Deepgram processes both channels and merges transcripts in chronological order
-7. Emits transcription results via `onTranscriptUpdate` callback
+3. **Smart channel analysis** (NEW):
+   - Analyzes each channel's RMS (Root Mean Square) and peak levels
+   - Detects silence: Skips chunks with no audio activity
+   - Detects single-speaker activity: Sends only the active channel (left=agent, right=customer)
+   - Detects overlapping speech: Sends stereo when both speakers are active
+   - Assigns sequence numbers to prevent race condition ordering issues
+4. **Channel-based sending strategy**:
+   - **Mono audio**: Sends as-is, relies on STT diarization
+   - **Stereo - left only active**: Sends left channel only, speaker=agent
+   - **Stereo - right only active**: Sends right channel only, speaker=customer
+   - **Stereo - both active**: Sends full stereo for Deepgram's ML diarization
+5. Converts chunk to WAV format (mono or stereo based on strategy)
+6. POSTs chunk to `/api/transcribe-chunk` with metadata (sequence, speaker, strategy)
+7. **Sequence-based ordering**: UI buffers out-of-order responses and displays them sequentially
+8. Emits transcription results via `onTranscriptUpdate` callback
 
 **Usage:**
 ```tsx
@@ -464,22 +472,89 @@ Supported in all modern browsers (Chrome, Firefox, Safari, Edge).
 4. The system now mixes left and right channels, capturing both speakers
 
 **How stereo call recordings work:**
-- Many call recording systems record agent on left channel, customer on right channel
-- The AudioPlaybackSimulator preserves stereo audio (doesn't mix channels)
-- Deepgram's `multichannel=true` parameter processes each channel separately
-- Deepgram then merges the transcripts in chronological order with proper speaker attribution
-- This provides the best speaker diarization accuracy for dual-channel recordings
+- **Industry standard**: Most telephony systems (Twilio, Avaya) record agent on left channel, customer on right channel
+- **Configurable assumption**: The system assumes left=agent, right=customer (standard convention)
+- **Smart processing**:
+  - When only one speaker is active → sends single channel with known speaker identity
+  - When both speakers overlap → sends stereo for Deepgram's ML-based separation
+- **Benefits**:
+  - Higher accuracy: Channel separation provides definitive speaker identification
+  - Better handling of overlapping speech: Reduces transcription errors from mixed audio
+  - Lower latency: Smaller payloads when only one speaker is active
+  - Prevents race conditions: Sequence numbering ensures correct display order
+
+## Channel Mapping Configuration
+
+### Standard Convention (Default)
+```
+Left Channel (0)  = Agent
+Right Channel (1) = Customer
+```
+
+This follows industry standards from:
+- **Twilio Media Streams**: Left=customer, Right=agent in dual-channel recording
+- **Avaya**: Participant channels separated for agent/customer
+- **Most PBX systems**: Convention for outbound call recordings
+
+### Why This Works in Production
+
+Real-time call streaming from Twilio and Avaya provides separated audio channels:
+
+**Twilio**:
+- Media Streams API delivers audio over WebSocket
+- `track` attribute allows capturing inbound and outbound separately
+- Dual-channel recording keeps participants on separate channels
+
+**Avaya**:
+- DMCC API provides call recording with separate participant channels
+- Real-time monitoring supports channel-separated streaming
+
+### Customization (Future)
+
+To make channel mapping configurable:
+```typescript
+// Add to AudioPlaybackSimulator props
+channelMapping?: {
+  leftChannel: 'agent' | 'customer'
+  rightChannel: 'agent' | 'customer'
+}
+```
+
+Current hardcoded mapping in `audio-utils.ts:258-262,269-272`.
+
+## Recent Improvements (v2)
+
+✅ **Smart Channel Analysis**
+- RMS-based silence detection skips empty chunks
+- Per-channel peak detection identifies active speaker
+- Automatic switching between mono/stereo sending
+
+✅ **Intelligent Speaker Detection**
+- Channel-based speaker identification (most accurate)
+- Falls back to Deepgram ML diarization for overlapping speech
+- Heuristic-based detection for Whisper (when needed)
+
+✅ **Race Condition Prevention**
+- Sequence numbering for all chunks
+- Client-side buffering of out-of-order responses
+- Sequential processing ensures correct display order
+
+✅ **Optimized Bandwidth**
+- Silence detection reduces unnecessary API calls
+- Single-channel transmission when only one speaker active
+- Stereo only sent when both speakers overlap
 
 ## Future Enhancements
 
 - [ ] Real-time audio streaming (WebRTC/Twilio integration)
-- [ ] Multi-speaker diarization (3+ speakers)
+- [ ] Configurable channel mapping (swap agent/customer channels)
+- [ ] Multi-speaker diarization (3+ speakers, conference calls)
 - [ ] Custom vocabulary/phrases for better accuracy
 - [ ] Sentiment analysis integration
 - [ ] Intent detection and keyword spotting
 - [ ] Export transcript to PDF/text
 - [ ] Playback speed control
-- [ ] Waveform visualization
+- [ ] Waveform visualization with channel separation view
 
 ## Related Documentation
 

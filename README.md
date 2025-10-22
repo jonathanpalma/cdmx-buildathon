@@ -94,7 +94,7 @@ office-hours-buildathon/
 
 ## 🚀 Solution
 
-**CloseLoop** is an **AI-powered copilot** that supports call center agents during live conversations.
+**OneVoice** is an **AI-powered copilot** that supports call center agents during live conversations.
 It integrates into the sales workflow, providing:
 
 1. **Real-Time Intelligence** – live transcription, intent detection, objections, and drop-off risk.

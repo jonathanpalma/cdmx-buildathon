@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react"
 import { Play, Pause, RotateCcw } from "lucide-react"
 import { Button } from "~/components/ui/button"
-import { formatTimestamp } from "~/lib/audio-utils"
+import { formatTimestamp, analyzeAudioChannels, monoAudioBufferToWav } from "~/lib/audio-utils"
 import { cn } from "~/lib/utils"
 
 export interface TranscriptEvent {
@@ -10,6 +10,7 @@ export interface TranscriptEvent {
   speaker?: "agent" | "customer"
   confidence?: number
   chunkIndex?: number
+  sequenceNumber?: number // For ordering responses correctly
   isEmpty?: boolean
 }
 
@@ -107,6 +108,7 @@ export function AudioPlaybackSimulator({
   const audioBufferRef = useRef<AudioBuffer | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const chunkIndexRef = useRef(0)
+  const sequenceNumberRef = useRef(0) // Global sequence number for ordering
 
   // Create audio URL from file and decode audio buffer
   useEffect(() => {
@@ -178,71 +180,98 @@ export function AudioPlaybackSimulator({
             const chunkLength = endSample - startSample
             const numberOfChannels = audioBuffer.numberOfChannels
 
-            // Create a new buffer for this chunk
-            // Keep stereo if source is stereo - helps with speaker diarization
-            const outputChannels = numberOfChannels
+            // Create a new buffer for this chunk (preserve stereo if present)
             const chunkBuffer = audioContextRef.current!.createBuffer(
-              outputChannels,
+              numberOfChannels,
               chunkLength,
               sampleRate
             )
 
             // Copy audio data to chunk buffer
-            let totalRms = 0
-            for (let ch = 0; ch < outputChannels; ch++) {
+            for (let ch = 0; ch < numberOfChannels; ch++) {
               const sourceData = audioBuffer.getChannelData(ch)
               const chunkData = chunkBuffer.getChannelData(ch)
-
-              let sumSquares = 0
               for (let i = 0; i < chunkLength; i++) {
-                const sampleIndex = startSample + i
-                chunkData[i] = sourceData[sampleIndex]
-                sumSquares += chunkData[i] * chunkData[i]
+                chunkData[i] = sourceData[startSample + i]
               }
-
-              const channelRms = Math.sqrt(sumSquares / chunkLength)
-              totalRms += channelRms
             }
 
-            // Calculate average RMS across all channels
-            const rms = totalRms / outputChannels
-            const hasAudio = rms > 0.01 // Threshold for silence detection
+            // Analyze the chunk to determine what to send
+            const analysis = analyzeAudioChannels(chunkBuffer)
 
-            // Convert to WAV blob (preserving stereo if present)
-            const wavBlob = audioBufferToWav(chunkBuffer)
-
-            // Skip sending chunks with no audio (silence)
-            if (!hasAudio) {
+            // Skip completely silent chunks
+            if (analysis.overall.isSilence) {
+              console.log(`Chunk ${chunkIndexRef.current}: Silence detected, skipping`)
               chunkIndexRef.current++
               return
             }
+
+            // Determine what audio to send based on analysis
+            let wavBlob: Blob
+            let detectedSpeaker: "agent" | "customer" | undefined = analysis.overall.dominantSpeaker
+            let channelStrategy: 'mono-left' | 'mono-right' | 'stereo'
+
+            if (numberOfChannels === 1) {
+              // Mono audio - send as-is
+              wavBlob = audioBufferToWav(chunkBuffer)
+              channelStrategy = 'mono-left'
+            } else if (analysis.overall.dominantChannel === 'left') {
+              // Only agent speaking - send left channel only
+              wavBlob = monoAudioBufferToWav(chunkBuffer, 0)
+              channelStrategy = 'mono-left'
+              console.log(`Chunk ${chunkIndexRef.current}: Agent only (L: ${analysis.leftChannel?.rms.toFixed(4)}, R: ${analysis.rightChannel?.rms.toFixed(4)})`)
+            } else if (analysis.overall.dominantChannel === 'right') {
+              // Only customer speaking - send right channel only
+              wavBlob = monoAudioBufferToWav(chunkBuffer, 1)
+              channelStrategy = 'mono-right'
+              console.log(`Chunk ${chunkIndexRef.current}: Customer only (L: ${analysis.leftChannel?.rms.toFixed(4)}, R: ${analysis.rightChannel?.rms.toFixed(4)})`)
+            } else {
+              // Both speakers active (overlapping speech) - send stereo for Deepgram to handle
+              wavBlob = audioBufferToWav(chunkBuffer)
+              channelStrategy = 'stereo'
+              console.log(`Chunk ${chunkIndexRef.current}: Both speakers (L: ${analysis.leftChannel?.rms.toFixed(4)}, R: ${analysis.rightChannel?.rms.toFixed(4)})`)
+            }
+
+            // Assign sequence number for ordering responses
+            const currentSequence = sequenceNumberRef.current++
 
             // Send chunk to STT endpoint
             const formData = new FormData()
             formData.append("audio", wavBlob, `chunk-${chunkIndexRef.current}.wav`)
             formData.append("timestamp", startTime.toString())
             formData.append("chunkIndex", chunkIndexRef.current.toString())
+            formData.append("sequenceNumber", currentSequence.toString())
+            formData.append("channelStrategy", channelStrategy)
+            if (detectedSpeaker) {
+              formData.append("detectedSpeaker", detectedSpeaker)
+            }
 
-            const response = await fetch("/api/transcribe-chunk", {
+            // Send request (don't await - let it process in background)
+            fetch("/api/transcribe-chunk", {
               method: "POST",
               body: formData,
             })
+              .then(async (response) => {
+                if (response.ok) {
+                  const result = await response.json()
 
-            if (response.ok) {
-              const result = await response.json()
-
-              // Emit transcript event (including isEmpty flag)
-              onTranscriptUpdate?.({
-                timestamp: startTime,
-                text: result.text || "",
-                speaker: result.speaker || (chunkIndexRef.current % 2 === 0 ? "agent" : "customer"),
-                confidence: result.confidence,
-                chunkIndex: chunkIndexRef.current,
-                isEmpty: result.isEmpty || false,
+                  // Emit transcript event with sequence number for proper ordering
+                  onTranscriptUpdate?.({
+                    timestamp: startTime,
+                    text: result.text || "",
+                    speaker: result.speaker || detectedSpeaker || "agent",
+                    confidence: result.confidence,
+                    chunkIndex: chunkIndexRef.current,
+                    sequenceNumber: currentSequence,
+                    isEmpty: result.isEmpty || false,
+                  })
+                } else {
+                  console.error(`Failed to transcribe chunk ${chunkIndexRef.current}:`, response.statusText)
+                }
               })
-            } else {
-              console.error(`Failed to transcribe chunk ${chunkIndexRef.current}:`, response.statusText)
-            }
+              .catch((error) => {
+                console.error(`Error transcribing chunk ${chunkIndexRef.current}:`, error)
+              })
 
             chunkIndexRef.current++
           } catch (error) {
@@ -280,6 +309,7 @@ export function AudioPlaybackSimulator({
       audioRef.current.currentTime = 0
       lastProcessedTimeRef.current = 0
       chunkIndexRef.current = 0
+      sequenceNumberRef.current = 0
       setCurrentTime(0)
       if (isPlaying) {
         audioRef.current.play()

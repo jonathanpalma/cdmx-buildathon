@@ -209,6 +209,10 @@ export default function Index() {
     }, 2500) // 2.5 second debounce
   }, [executeAgentCall])
 
+  // Buffer for handling out-of-order responses
+  const pendingTranscriptsRef = useRef<Map<number, any>>(new Map())
+  const nextExpectedSequenceRef = useRef(0)
+
   // Handle transcript updates from playback
   const handleTranscriptUpdate = useCallback((event: any) => {
     setCurrentTime(event.timestamp)
@@ -218,64 +222,82 @@ export default function Index() {
       return
     }
 
-    setTranscriptEntries((prev) => {
-      // Check if this message already exists
-      const exists = prev.some(
-        (entry) =>
-          entry.timestamp === event.timestamp && entry.text === event.text
-      )
+    // Handle sequence-based ordering to prevent race conditions
+    const sequenceNumber = event.sequenceNumber ?? event.chunkIndex
 
-      if (exists) {
-        return prev
+    // Add to pending buffer
+    pendingTranscriptsRef.current.set(sequenceNumber, event)
+
+    // Process all sequential entries starting from next expected
+    const processSequentialEntries = () => {
+      while (pendingTranscriptsRef.current.has(nextExpectedSequenceRef.current)) {
+        const nextEvent = pendingTranscriptsRef.current.get(nextExpectedSequenceRef.current)!
+        pendingTranscriptsRef.current.delete(nextExpectedSequenceRef.current)
+        nextExpectedSequenceRef.current++
+
+        // Add to transcript
+        setTranscriptEntries((prev) => {
+          // Check if this message already exists
+          const exists = prev.some(
+            (entry) =>
+              entry.timestamp === nextEvent.timestamp && entry.text === nextEvent.text
+          )
+
+          if (exists) {
+            return prev
+          }
+
+          // Check if we should merge with the last entry from the same speaker
+          const lastEntry = prev[prev.length - 1]
+          const shouldMerge =
+            lastEntry &&
+            lastEntry.speaker === nextEvent.speaker &&
+            nextEvent.timestamp - lastEntry.timestamp < 5 // Merge if within 5 seconds
+
+          if (shouldMerge) {
+            // Create merged entry
+            const mergedEntry: TranscriptEntry = {
+              ...lastEntry,
+              text: `${lastEntry.text} ${nextEvent.text}`,
+              confidence: (lastEntry.confidence! + nextEvent.confidence) / 2, // Average confidence
+            }
+
+            // DON'T call agent yet - we're still accumulating from same speaker
+            // The agent will be called when speaker changes or after a pause
+
+            // Replace last entry with merged one
+            return [...prev.slice(0, -1), mergedEntry]
+          }
+
+          // Create new entry (new speaker or time gap)
+          const newEntry: TranscriptEntry = {
+            id: `entry-${nextEvent.chunkIndex}-${nextEvent.timestamp}`,
+            timestamp: nextEvent.timestamp,
+            text: nextEvent.text,
+            speaker: nextEvent.speaker,
+            confidence: nextEvent.confidence,
+            isFinal: true,
+          }
+
+          const newEntries = [...prev, newEntry]
+
+          // Call AI agent when speaker changes or significant gap
+          // This ensures we send complete thoughts, not fragments
+          if (lastEntry && lastEntry.speaker !== nextEvent.speaker) {
+            // Speaker changed - send the PREVIOUS speaker's complete message
+            callAgent(lastEntry)
+          } else if (!lastEntry) {
+            // First message - send it
+            callAgent(newEntry)
+          }
+          // If same speaker but time gap, the debounce will handle it
+
+          return newEntries
+        })
       }
+    }
 
-      // Check if we should merge with the last entry from the same speaker
-      const lastEntry = prev[prev.length - 1]
-      const shouldMerge =
-        lastEntry &&
-        lastEntry.speaker === event.speaker &&
-        event.timestamp - lastEntry.timestamp < 5 // Merge if within 5 seconds
-
-      if (shouldMerge) {
-        // Create merged entry
-        const mergedEntry: TranscriptEntry = {
-          ...lastEntry,
-          text: `${lastEntry.text} ${event.text}`,
-          confidence: (lastEntry.confidence! + event.confidence) / 2, // Average confidence
-        }
-
-        // DON'T call agent yet - we're still accumulating from same speaker
-        // The agent will be called when speaker changes or after a pause
-
-        // Replace last entry with merged one
-        return [...prev.slice(0, -1), mergedEntry]
-      }
-
-      // Create new entry (new speaker or time gap)
-      const newEntry: TranscriptEntry = {
-        id: `entry-${event.chunkIndex}-${event.timestamp}`,
-        timestamp: event.timestamp,
-        text: event.text,
-        speaker: event.speaker,
-        confidence: event.confidence,
-        isFinal: true,
-      }
-
-      const newEntries = [...prev, newEntry]
-
-      // Call AI agent when speaker changes or significant gap
-      // This ensures we send complete thoughts, not fragments
-      if (lastEntry && lastEntry.speaker !== event.speaker) {
-        // Speaker changed - send the PREVIOUS speaker's complete message
-        callAgent(lastEntry)
-      } else if (!lastEntry) {
-        // First message - send it
-        callAgent(newEntry)
-      }
-      // If same speaker but time gap, the debounce will handle it
-
-      return newEntries
-    })
+    processSequentialEntries()
   }, [callAgent])
 
   const handleActionClick = useCallback((actionId: string) => {

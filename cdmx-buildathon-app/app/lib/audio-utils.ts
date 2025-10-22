@@ -154,3 +154,188 @@ export async function getAudioDuration(audioFile: File): Promise<number> {
   const audioBuffer = await audioContext.decodeAudioData(arrayBuffer)
   return audioBuffer.duration
 }
+
+/**
+ * Audio analysis result for a channel
+ */
+export interface ChannelAnalysis {
+  rms: number
+  peak: number
+  hasAudio: boolean
+}
+
+/**
+ * Audio chunk analysis result
+ */
+export interface AudioChunkAnalysis {
+  leftChannel?: ChannelAnalysis
+  rightChannel?: ChannelAnalysis
+  overall: {
+    rms: number
+    isSilence: boolean
+    activeChannels: number
+    dominantChannel?: 'left' | 'right' | 'both'
+    dominantSpeaker?: 'agent' | 'customer'
+  }
+}
+
+/**
+ * Analyze audio buffer to detect which channels have active speech
+ *
+ * @param audioBuffer - The audio buffer to analyze
+ * @param silenceThreshold - RMS threshold below which audio is considered silence (default: 0.01)
+ * @param channelDominanceThreshold - How much louder one channel must be to be considered dominant (default: 2.0)
+ * @returns Analysis results for each channel and overall
+ */
+export function analyzeAudioChannels(
+  audioBuffer: AudioBuffer,
+  silenceThreshold: number = 0.01,
+  channelDominanceThreshold: number = 2.0
+): AudioChunkAnalysis {
+  const numberOfChannels = audioBuffer.numberOfChannels
+  const length = audioBuffer.length
+
+  // Analyze left channel (agent in stereo call recordings)
+  let leftAnalysis: ChannelAnalysis | undefined
+  if (numberOfChannels >= 1) {
+    const channelData = audioBuffer.getChannelData(0)
+    let sumSquares = 0
+    let peak = 0
+
+    for (let i = 0; i < length; i++) {
+      const abs = Math.abs(channelData[i])
+      sumSquares += channelData[i] * channelData[i]
+      peak = Math.max(peak, abs)
+    }
+
+    const rms = Math.sqrt(sumSquares / length)
+    leftAnalysis = {
+      rms,
+      peak,
+      hasAudio: rms > silenceThreshold,
+    }
+  }
+
+  // Analyze right channel (customer in stereo call recordings)
+  let rightAnalysis: ChannelAnalysis | undefined
+  if (numberOfChannels >= 2) {
+    const channelData = audioBuffer.getChannelData(1)
+    let sumSquares = 0
+    let peak = 0
+
+    for (let i = 0; i < length; i++) {
+      const abs = Math.abs(channelData[i])
+      sumSquares += channelData[i] * channelData[i]
+      peak = Math.max(peak, abs)
+    }
+
+    const rms = Math.sqrt(sumSquares / length)
+    rightAnalysis = {
+      rms,
+      peak,
+      hasAudio: rms > silenceThreshold,
+    }
+  }
+
+  // Calculate overall statistics
+  let overallRms = 0
+  let activeChannels = 0
+  let dominantChannel: 'left' | 'right' | 'both' | undefined
+  let dominantSpeaker: 'agent' | 'customer' | undefined
+
+  if (leftAnalysis && rightAnalysis) {
+    // Stereo audio
+    overallRms = (leftAnalysis.rms + rightAnalysis.rms) / 2
+
+    if (leftAnalysis.hasAudio) activeChannels++
+    if (rightAnalysis.hasAudio) activeChannels++
+
+    // Determine which channel is dominant
+    if (leftAnalysis.hasAudio && rightAnalysis.hasAudio) {
+      // Both channels have audio - check which is louder
+      const ratio = leftAnalysis.rms / rightAnalysis.rms
+      if (ratio > channelDominanceThreshold) {
+        dominantChannel = 'left'
+        dominantSpeaker = 'agent'
+      } else if (ratio < (1 / channelDominanceThreshold)) {
+        dominantChannel = 'right'
+        dominantSpeaker = 'customer'
+      } else {
+        // Both speaking at similar levels (overlapping speech)
+        dominantChannel = 'both'
+      }
+    } else if (leftAnalysis.hasAudio) {
+      dominantChannel = 'left'
+      dominantSpeaker = 'agent'
+    } else if (rightAnalysis.hasAudio) {
+      dominantChannel = 'right'
+      dominantSpeaker = 'customer'
+    }
+  } else if (leftAnalysis) {
+    // Mono audio
+    overallRms = leftAnalysis.rms
+    if (leftAnalysis.hasAudio) {
+      activeChannels = 1
+    }
+  }
+
+  return {
+    leftChannel: leftAnalysis,
+    rightChannel: rightAnalysis,
+    overall: {
+      rms: overallRms,
+      isSilence: activeChannels === 0,
+      activeChannels,
+      dominantChannel,
+      dominantSpeaker,
+    },
+  }
+}
+
+/**
+ * Convert a single-channel (mono) AudioBuffer to WAV blob
+ * Used when we want to send only one speaker's audio
+ */
+export function monoAudioBufferToWav(audioBuffer: AudioBuffer, channelIndex: 0 | 1 = 0): Blob {
+  const sampleRate = audioBuffer.sampleRate
+  const format = 1 // PCM
+  const bitDepth = 16
+  const numberOfChannels = 1 // Force mono
+
+  const channelData = audioBuffer.getChannelData(channelIndex)
+  const dataLength = channelData.length * 2 // 16-bit = 2 bytes per sample
+  const bufferLength = 44 + dataLength
+  const arrayBuffer = new ArrayBuffer(bufferLength)
+  const view = new DataView(arrayBuffer)
+
+  // WAV header
+  const writeString = (offset: number, string: string) => {
+    for (let i = 0; i < string.length; i++) {
+      view.setUint8(offset + i, string.charCodeAt(i))
+    }
+  }
+
+  writeString(0, "RIFF")
+  view.setUint32(4, bufferLength - 8, true)
+  writeString(8, "WAVE")
+  writeString(12, "fmt ")
+  view.setUint32(16, 16, true)
+  view.setUint16(20, format, true)
+  view.setUint16(22, numberOfChannels, true)
+  view.setUint32(24, sampleRate, true)
+  view.setUint32(28, sampleRate * numberOfChannels * (bitDepth / 8), true)
+  view.setUint16(32, numberOfChannels * (bitDepth / 8), true)
+  view.setUint16(34, bitDepth, true)
+  writeString(36, "data")
+  view.setUint32(40, dataLength, true)
+
+  // PCM data
+  let offset = 44
+  for (let i = 0; i < channelData.length; i++) {
+    const sample = Math.max(-1, Math.min(1, channelData[i]))
+    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
+    offset += 2
+  }
+
+  return new Blob([arrayBuffer], { type: "audio/wav" })
+}
