@@ -41,6 +41,7 @@ const model = new ChatAnthropic({
 async function analyzeIntent(state: AgentState): Promise<Partial<AgentState>> {
   logger.debug("Agent analyzing intent")
 
+  let rawResponse = ""
   try {
     const prompt = buildIntentAnalysisPrompt(state)
     const response = await model.invoke([
@@ -48,7 +49,22 @@ async function analyzeIntent(state: AgentState): Promise<Partial<AgentState>> {
       { role: "user", content: prompt },
     ])
 
-    const analysis = JSON.parse(response.content as string)
+    // Clean the response - Claude sometimes adds commentary after JSON
+    let content = (response.content as string).trim()
+    rawResponse = content // Save for error logging
+
+    // Extract JSON if there's text before/after it
+    const jsonMatch = content.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      content = jsonMatch[0]
+    }
+
+    const analysis = JSON.parse(content)
+
+    logger.debug("✅ Intent analysis parsed successfully", {
+      intentsFound: analysis.intents?.length || 0,
+      hasExtractedInfo: !!analysis.extractedInfo
+    })
 
     // Merge extracted info with existing profile
     const updatedProfile = {
@@ -76,7 +92,10 @@ async function analyzeIntent(state: AgentState): Promise<Partial<AgentState>> {
       customerProfile: updatedProfile,
     }
   } catch (error) {
-    logger.error("Agent intent analysis failed", { error })
+    logger.error("❌ INTENT_ANALYSIS_ERROR", {
+      error: error instanceof Error ? error.message : String(error),
+      rawResponse: rawResponse.substring(0, 200) + (rawResponse.length > 200 ? "..." : "")
+    })
     return { detectedIntents: [] }
   }
 }
@@ -97,7 +116,14 @@ async function manageConversationStages(
       { role: "user", content: prompt },
     ])
 
-    const result = JSON.parse(response.content as string)
+    // Clean the response - extract JSON only
+    let content = (response.content as string).trim()
+    const jsonMatch = content.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      content = jsonMatch[0]
+    }
+
+    const result = JSON.parse(content)
 
     return {
       conversationStages: result.conversationStages || [],
@@ -117,7 +143,15 @@ async function manageConversationStages(
 async function generateActions(
   state: AgentState
 ): Promise<Partial<AgentState>> {
-  logger.debug("Agent generating actions")
+  const startTime = Date.now()
+
+  logger.info("🤖 AGENT_GENERATION_START", {
+    messageCount: state.messages.length,
+    currentStage: state.currentStage,
+    lastMessage: state.messages[state.messages.length - 1]?.text.substring(0, 60),
+    hasExistingActions: state.executableActions?.length || 0,
+    detectedIntents: state.detectedIntents
+  })
 
   try {
     const prompt = buildActionGenerationPrompt(state)
@@ -126,16 +160,39 @@ async function generateActions(
       { role: "user", content: prompt },
     ])
 
-    const result = JSON.parse(response.content as string)
+    // Clean the response - extract JSON only
+    let content = (response.content as string).trim()
+    const jsonMatch = content.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      content = jsonMatch[0]
+    }
+
+    const result = JSON.parse(content)
+
+    logger.info("📥 AGENT_RAW_RESPONSE", {
+      executableActions: result.executableActions?.length || 0,
+      quickScripts: result.quickScripts?.length || 0,
+      backgroundTasks: result.backgroundTasks?.length || 0,
+      insights: {
+        hasEmotion: !!result.insights?.detectedEmotion,
+        hasConcerns: result.insights?.concerns?.length || 0,
+        hasMissingInfo: result.insights?.missingInformation?.length || 0,
+        healthScore: result.insights?.healthScore
+      },
+      processingTime: Date.now() - startTime + "ms"
+    })
 
     // Apply confidence filtering to executable actions
+    const suppressedActions: Array<{ label: string; confidence: number; reason: string }> = []
+
     const filteredActions = (result.executableActions || [])
       .filter((action: any) => {
         // Suppress low-confidence actions (< 70%)
         if (action.confidence < 70) {
-          logger.debug("Suppressing low-confidence action", {
+          suppressedActions.push({
             label: action.label,
-            confidence: action.confidence
+            confidence: action.confidence,
+            reason: "low_confidence"
           })
           return false
         }
@@ -179,11 +236,19 @@ async function generateActions(
       missingInformation: result.insights?.missingInformation || [],
     }
 
-    logger.debug("Agent generated categorized actions", {
-      executableCount: filteredActions.length,
-      scriptsCount: filteredScripts.length,
-      backgroundTaskCount: (result.backgroundTasks || []).length,
-      highestConfidence: filteredActions[0]?.confidence
+    // Log filtering results
+    logger.info("🔍 ACTION_FILTERING", {
+      raw: result.executableActions?.map((a: any) => ({
+        label: a.label,
+        confidence: a.confidence,
+        toolName: a.toolName,
+        status: suppressedActions.find(s => s.label === a.label) ? "suppressed" : "kept"
+      })) || [],
+      kept: filteredActions.length,
+      suppressed: suppressedActions.length,
+      suppressReasons: {
+        low_confidence: suppressedActions.filter(a => a.reason === "low_confidence").length
+      }
     })
 
     // Log any auto-executable actions
@@ -191,15 +256,30 @@ async function generateActions(
       a.confidence >= 95 && !a.requiresConfirmation
     )
     if (autoExecutable.length > 0) {
-      logger.info("Auto-executable actions detected", {
+      logger.info("⚡ AUTO_EXEC_CANDIDATES", {
         count: autoExecutable.length,
         actions: autoExecutable.map((a: any) => ({
+          id: a.id,
           label: a.label,
           confidence: a.confidence,
-          toolName: a.toolName
+          toolName: a.toolName,
+          riskLevel: a.riskLevel
         }))
       })
     }
+
+    // Log insights quality
+    const meaningfulInsights = {
+      concerns: insights.concerns?.length || 0,
+      missingInfo: insights.missingInformation?.length || 0,
+      emotion: insights.detectedEmotion !== "neutral" ? insights.detectedEmotion : null,
+      healthAlert: insights.healthScore < 60 ? insights.healthScore : null
+    }
+
+    logger.info("💡 INSIGHTS_GENERATED", {
+      meaningful: Object.values(meaningfulInsights).some(v => v !== null && v !== 0),
+      ...meaningfulInsights
+    })
 
     return {
       executableActions: filteredActions,
@@ -250,7 +330,14 @@ async function calculateHealthScore(
       { role: "user", content: prompt },
     ])
 
-    const result = JSON.parse(response.content as string)
+    // Clean the response - extract JSON only
+    let content = (response.content as string).trim()
+    const jsonMatch = content.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      content = jsonMatch[0]
+    }
+
+    const result = JSON.parse(content)
 
     return {
       healthScore: Math.max(0, Math.min(100, result.score || 75)),

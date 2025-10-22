@@ -34,10 +34,16 @@ export interface ExecutableAction {
   estimatedDuration?: number // seconds
   riskLevel: "low" | "medium" | "high"
 
-  // Status tracking
-  status: "suggested" | "confirmed" | "executing" | "completed" | "failed"
+  // Status tracking (expanded)
+  status: "suggested" | "confirmed" | "executing" | "completed" | "failed" | "dismissed" | "invalidated"
   result?: string
   error?: string
+
+  // History tracking
+  createdAt: number // timestamp when suggested
+  updatedAt?: number // timestamp of last status change
+  dismissedReason?: string // why it was dismissed
+  invalidatedReason?: string // why it became invalid (e.g., "conversation moved past this")
 }
 
 /**
@@ -127,9 +133,42 @@ export interface BackgroundTask {
   error?: string
 }
 
+/**
+ * Operation Context - Defines the type of call and what UI sections to show
+ */
+export type OperationContext = "booking" | "sales" | "support" | "general"
+
+export interface OperationContextConfig {
+  type: OperationContext
+  label: string
+  icon: string
+  // Which sections to show in UI
+  sections: {
+    bookingDetails?: boolean
+    salesOpportunity?: boolean
+    supportTicket?: boolean
+    customerHistory?: boolean
+  }
+  // Context-specific tools/actions available
+  availableTools?: string[]
+}
+
+/**
+ * Action History Entry - Tracks all actions suggested/executed/dismissed
+ */
+export interface ActionHistoryEntry {
+  action: ExecutableAction
+  suggestedAt: number
+  resolvedAt?: number // when completed/dismissed/invalidated
+  userInteraction?: "confirmed" | "dismissed" | "auto_executed"
+}
+
 export interface AgentState {
   // Conversation history (kept minimal - last 10 messages)
   messages: TranscriptMessage[]
+
+  // Operation context (NEW)
+  operationContext?: OperationContext
 
   // Dynamically generated conversation stages (evolves as conversation progresses)
   conversationStages: ConversationStage[]
@@ -144,7 +183,8 @@ export interface AgentState {
   detectedIntents: string[]  // e.g., ["asking_about_dates", "price_objection"]
 
   // NEW: Categorized actions
-  executableActions: ExecutableAction[] // High-priority, tool-based actions
+  executableActions: ExecutableAction[] // Currently active/suggested actions
+  actionHistory: ActionHistoryEntry[] // Complete history of all actions
   quickScripts: QuickScript[] // Communication templates
   insights: ConversationInsight // Context awareness
 
@@ -161,11 +201,13 @@ export interface AgentState {
 
 export const INITIAL_AGENT_STATE: AgentState = {
   messages: [],
+  operationContext: "booking", // Default to booking for hotel context
   conversationStages: [],
   currentStage: "",
   customerProfile: {},
   detectedIntents: [],
   executableActions: [],
+  actionHistory: [],
   quickScripts: [],
   insights: {
     healthScore: 75,
@@ -177,6 +219,51 @@ export const INITIAL_AGENT_STATE: AgentState = {
   },
   healthScore: 75,
   backgroundTasks: [],
+}
+
+/**
+ * Operation Context Configurations
+ */
+export const OPERATION_CONTEXTS: Record<OperationContext, OperationContextConfig> = {
+  booking: {
+    type: "booking",
+    label: "Booking",
+    icon: "🏨",
+    sections: {
+      bookingDetails: true,
+      customerHistory: false,
+    },
+    availableTools: ["palace:checkAvailability", "palace:calculateQuote", "palace:searchProperties"],
+  },
+  sales: {
+    type: "sales",
+    label: "Sales",
+    icon: "💼",
+    sections: {
+      salesOpportunity: true,
+      customerHistory: true,
+    },
+    availableTools: ["crm:createLead", "crm:updateOpportunity", "email:sendProposal"],
+  },
+  support: {
+    type: "support",
+    label: "Support",
+    icon: "🎧",
+    sections: {
+      supportTicket: true,
+      customerHistory: true,
+    },
+    availableTools: ["ticket:create", "ticket:update", "kb:search"],
+  },
+  general: {
+    type: "general",
+    label: "General",
+    icon: "💬",
+    sections: {
+      customerHistory: false,
+    },
+    availableTools: [],
+  },
 }
 
 /**

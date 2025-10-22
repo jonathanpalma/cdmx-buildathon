@@ -5,7 +5,7 @@ import { AudioPlaybackSimulator } from "~/components/audio/audio-playback-simula
 import { LiveTranscriptImproved as LiveTranscript, type TranscriptEntry } from "~/components/audio/live-transcript-improved"
 import { AgentCopilot, type CurrentStepData } from "~/components/copilot"
 import { AgentCopilotV2 } from "~/components/copilot/agent-copilot-v2"
-import type { AgentState, ConversationStage, ExecutableAction } from "~/lib/agent/state"
+import type { AgentState, ConversationStage, ExecutableAction, CustomerProfile } from "~/lib/agent/state"
 import { logger } from "~/lib/logger.client"
 import { validateEnvironment } from "~/lib/env-validation.server"
 
@@ -111,6 +111,20 @@ export default function Index() {
       return
     }
 
+    // Wait for minimum message context before first agent call
+    // This prevents premature analysis on initial greetings
+    const MIN_MESSAGES_FOR_FIRST_CALL = 3
+    const hasNeverAnalyzed = !agentState.currentStage && !agentState.executableActions
+
+    if (hasNeverAnalyzed && messages.length < MIN_MESSAGES_FOR_FIRST_CALL) {
+      logger.debug("⏸️ WAITING_FOR_CONTEXT", {
+        messageCount: messages.length,
+        required: MIN_MESSAGES_FOR_FIRST_CALL,
+        reason: "first_call_threshold"
+      })
+      return
+    }
+
     abortControllerRef.current = new AbortController()
     setIsAgentProcessing(true)
 
@@ -138,11 +152,6 @@ export default function Index() {
 
       if (response.ok) {
         const { state } = await response.json()
-        logger.debug("Agent response received", {
-          hasExecutableActions: state.executableActions?.length > 0,
-          hasInsights: !!state.insights,
-          currentStage: state.currentStage
-        })
 
         // Check if we should force update (manual refresh)
         const shouldForceUpdate = forceUpdate
@@ -152,14 +161,34 @@ export default function Index() {
         const hasNewSuggestions = state.executableActions && state.executableActions.length > 0
         const stageChanged = state.currentStage !== agentState.currentStage
 
+        // Determine update decision
+        const willUpdate = !hasCurrentSuggestions || stageChanged || shouldForceUpdate || hasNewSuggestions
+        const updateReason = !hasCurrentSuggestions ? "no_current" :
+                             stageChanged ? "stage_changed" :
+                             shouldForceUpdate ? "manual_refresh" : "new_suggestions"
+
+        logger.info("📊 UI_UPDATE_DECISION", {
+          willUpdate,
+          reason: updateReason,
+          before: {
+            actions: agentState.executableActions?.length || 0,
+            stage: agentState.currentStage,
+            hasInsights: !!agentState.insights
+          },
+          after: {
+            actions: state.executableActions?.length || 0,
+            stage: state.currentStage,
+            hasInsights: !!state.insights,
+            topAction: state.executableActions?.[0] ? {
+              label: state.executableActions[0].label,
+              confidence: state.executableActions[0].confidence
+            } : null
+          }
+        })
+
         // ALWAYS update state, but be smart about what to show
         // This ensures insights are always fresh, even if no actions
-        if (!hasCurrentSuggestions || stageChanged || shouldForceUpdate || hasNewSuggestions) {
-          logger.debug("Agent updating UI with new state", {
-            reason: !hasCurrentSuggestions ? "no_current" :
-                    stageChanged ? "stage_changed" :
-                    shouldForceUpdate ? "manual_refresh" : "new_suggestions"
-          })
+        if (willUpdate) {
           setAgentState(state)
           setConversationHealth(state.healthScore || 75)
 
@@ -169,8 +198,8 @@ export default function Index() {
           }
           setForceUpdate(false) // Reset flag
         } else {
-          logger.debug("Agent updating background context", {
-            keepingActionsVisible: true
+          logger.info("📌 KEEPING_CURRENT_UI", {
+            reason: "Actions still relevant, updating background only"
           })
           // Update insights and context but keep current actions visible
           setAgentState(prev => ({
@@ -430,10 +459,42 @@ export default function Index() {
 
   // Execute MCP tool
   const executeMCPAction = useCallback(async (action: ExecutableAction) => {
-    logger.info("Executing MCP action", {
+    const startTime = Date.now()
+
+    // Merge customer profile data with action parameters
+    // Customer profile is the source of truth - use it to fill in any missing parameters
+    const enrichedParameters = {
+      ...action.parameters,
+      // Override with customer profile data if available
+      ...(agentState.customerProfile?.travelDates?.checkIn && {
+        checkIn: agentState.customerProfile.travelDates.checkIn
+      }),
+      ...(agentState.customerProfile?.travelDates?.checkOut && {
+        checkOut: agentState.customerProfile.travelDates.checkOut
+      }),
+      ...(agentState.customerProfile?.partySize?.adults && {
+        adults: agentState.customerProfile.partySize.adults
+      }),
+      ...(agentState.customerProfile?.partySize?.children && {
+        children: agentState.customerProfile.partySize.children
+      }),
+      ...(agentState.customerProfile?.budget?.max && {
+        maxBudget: agentState.customerProfile.budget.max
+      }),
+      ...(agentState.customerProfile?.preferences && agentState.customerProfile.preferences.length > 0 && {
+        preferences: agentState.customerProfile.preferences
+      }),
+    }
+
+    logger.info("🚀 MCP_EXEC_START", {
       actionId: action.id,
+      label: action.label,
       toolName: action.toolName,
-      confidence: action.confidence
+      parameters: enrichedParameters,
+      originalParams: action.parameters,
+      enrichedFromProfile: Object.keys(enrichedParameters).filter(k => !(k in (action.parameters || {}))),
+      confidence: action.confidence,
+      triggeredBy: autoExecuteCountdown ? "auto_exec" : "manual_click"
     })
 
     // Update action status to executing
@@ -450,7 +511,7 @@ export default function Index() {
           label: action.label,
           type: action.executionType,
           toolName: action.toolName,
-          parameters: action.parameters,
+          parameters: enrichedParameters,
           status: "running",
           startedAt: Date.now(),
         }
@@ -458,21 +519,29 @@ export default function Index() {
     }))
 
     try {
-      // Call MCP execution API
+      // Call MCP execution API with enriched parameters
       const response = await fetch("/api/mcp/execute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           actionId: action.id,
           toolName: action.toolName,
-          parameters: action.parameters,
+          parameters: enrichedParameters,
         }),
       })
 
       const result = await response.json()
 
       if (result.success) {
-        logger.info("MCP action succeeded", { actionId: action.id, summary: result.summary })
+        logger.info("✅ MCP_EXEC_COMPLETE", {
+          actionId: action.id,
+          label: action.label,
+          toolName: action.toolName,
+          success: true,
+          summary: result.summary,
+          duration: Date.now() - startTime + "ms",
+          dataKeys: result.data ? Object.keys(result.data) : []
+        })
 
         // Update action status to completed
         setAgentState(prev => ({
@@ -499,7 +568,13 @@ export default function Index() {
           ),
         }))
       } else {
-        logger.error("MCP action failed", { actionId: action.id, error: result.error })
+        logger.error("❌ MCP_EXEC_FAILED", {
+          actionId: action.id,
+          label: action.label,
+          toolName: action.toolName,
+          error: result.error,
+          duration: Date.now() - startTime + "ms"
+        })
 
         // Update action status to failed
         setAgentState(prev => ({
@@ -546,7 +621,7 @@ export default function Index() {
         ),
       }))
     }
-  }, [])
+  }, [agentState.customerProfile, autoExecuteCountdown])
 
   // Auto-execution logic - detect 95%+ confidence actions
   useEffect(() => {
@@ -558,9 +633,15 @@ export default function Index() {
     )
 
     if (autoExecutableAction && !autoExecuteCountdown) {
-      logger.info("Auto-executable action detected", {
+      logger.info("⚡ AUTO_EXEC_DETECTED", {
         actionId: autoExecutableAction.id,
+        label: autoExecutableAction.label,
         confidence: autoExecutableAction.confidence,
+        toolName: autoExecutableAction.toolName,
+        requiresConfirmation: autoExecutableAction.requiresConfirmation,
+        riskLevel: autoExecutableAction.riskLevel,
+        countdownSeconds: 3,
+        canCancel: true
       })
 
       // Start 3-second countdown
@@ -577,10 +658,15 @@ export default function Index() {
             actionId: autoExecutableAction.id,
             remaining,
           })
+          logger.debug("⏱️ AUTO_EXEC_COUNTDOWN", { remaining })
         } else {
           // Execute the action
           clearInterval(countdownInterval)
           setAutoExecuteCountdown(null)
+          logger.info("✅ AUTO_EXEC_TRIGGERED", {
+            actionId: autoExecutableAction.id,
+            label: autoExecutableAction.label
+          })
           executeMCPAction(autoExecutableAction)
         }
       }, 1000)
@@ -598,14 +684,21 @@ export default function Index() {
   }, [agentState.executableActions, autoExecuteCountdown, executeMCPAction])
 
   const handleActionClick = useCallback((actionId: string) => {
-    logger.info("Action clicked", { actionId })
-
     // Find the action
     const action = agentState.executableActions?.find(a => a.id === actionId)
     if (!action) {
       logger.warn("Action not found", { actionId })
       return
     }
+
+    logger.info("👆 USER_ACTION", {
+      type: "action_click",
+      actionId,
+      actionLabel: action.label,
+      confidence: action.confidence,
+      toolName: action.toolName,
+      wasAutoCancelled: autoExecuteCountdown?.actionId === actionId
+    })
 
     // Cancel any auto-execution countdown
     if (autoExecuteCountdown?.actionId === actionId) {
@@ -614,6 +707,7 @@ export default function Index() {
         autoExecuteTimerRef.current = null
       }
       setAutoExecuteCountdown(null)
+      logger.info("🛑 AUTO_EXEC_CANCELLED", { reason: "user_click", actionId })
     }
 
     // Execute the action
@@ -621,7 +715,14 @@ export default function Index() {
   }, [agentState.executableActions, autoExecuteCountdown, executeMCPAction])
 
   const handleActionCancel = useCallback((actionId: string) => {
-    logger.info("Action cancelled", { actionId })
+    const action = agentState.executableActions?.find(a => a.id === actionId)
+
+    logger.info("👆 USER_ACTION", {
+      type: "action_cancel",
+      actionId,
+      actionLabel: action?.label,
+      wasAutoExecuting: autoExecuteCountdown?.actionId === actionId
+    })
 
     // Cancel auto-execution countdown if active
     if (autoExecuteCountdown?.actionId === actionId) {
@@ -630,6 +731,7 @@ export default function Index() {
         autoExecuteTimerRef.current = null
       }
       setAutoExecuteCountdown(null)
+      logger.info("🛑 AUTO_EXEC_CANCELLED", { reason: "user_cancel", actionId })
     }
 
     // Remove the action from suggestions
@@ -637,11 +739,9 @@ export default function Index() {
       ...prev,
       executableActions: prev.executableActions?.filter(a => a.id !== actionId),
     }))
-  }, [autoExecuteCountdown])
+  }, [agentState.executableActions, autoExecuteCountdown])
 
   const handleScriptCopy = useCallback((scriptId: string) => {
-    logger.info("Script copy requested", { scriptId })
-
     // Find the script
     const script = agentState.quickScripts?.find(s => s.id === scriptId)
     if (!script) {
@@ -649,18 +749,48 @@ export default function Index() {
       return
     }
 
+    logger.info("👆 USER_ACTION", {
+      type: "script_copy",
+      scriptId,
+      scriptLabel: script.label,
+      confidence: script.confidence,
+      scriptLength: script.script.length
+    })
+
     // Copy to clipboard
     navigator.clipboard.writeText(script.script).then(() => {
-      logger.info("Script copied to clipboard", { scriptId })
+      logger.info("📋 SCRIPT_COPIED", {
+        scriptId,
+        label: script.label
+      })
       // TODO: Show toast notification
     }).catch((error) => {
-      logger.error("Failed to copy script", { scriptId, error })
+      logger.error("❌ SCRIPT_COPY_FAILED", { scriptId, error })
     })
   }, [agentState.quickScripts])
 
   const handleFeedback = useCallback((actionId: string, positive: boolean) => {
     // TODO: Track agent feedback for ML improvement
     logger.info("Feedback received", { actionId, positive })
+  }, [])
+
+  const handleProfileUpdate = useCallback((updates: Partial<CustomerProfile>) => {
+    logger.info("👤 PROFILE_UPDATE", {
+      type: "manual_override",
+      updates: Object.keys(updates),
+      hasNewDates: !!updates.travelDates,
+      hasNewPartySize: !!updates.partySize,
+      hasNewBudget: !!updates.budget
+    })
+
+    // Update agent state with manual overrides
+    setAgentState(prev => ({
+      ...prev,
+      customerProfile: {
+        ...prev.customerProfile,
+        ...updates
+      }
+    }))
   }, [])
 
   const handleRefresh = useCallback(() => {
@@ -802,10 +932,15 @@ export default function Index() {
                 quickScripts={agentState.quickScripts || []}
                 backgroundTasks={agentState.backgroundTasks || []}
                 stages={stages}
+                customerProfile={agentState.customerProfile || {}}
                 onActionClick={handleActionClick}
                 onActionCancel={handleActionCancel}
                 onScriptCopy={handleScriptCopy}
+                onProfileUpdate={handleProfileUpdate}
                 isProcessing={isAgentProcessing}
+                messageCount={transcriptEntries.length}
+                hasAnalyzedBefore={!!agentState.currentStage || !!agentState.executableActions}
+                isListening={isPlaying}
               />
             </div>
           </div>

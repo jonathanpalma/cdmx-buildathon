@@ -25,13 +25,19 @@ import {
   MessageSquare,
   Activity,
 } from "lucide-react"
+import { BookingContext } from "./booking-context"
+import { ActionHistory } from "./action-history"
 import type {
   ExecutableAction,
   BackgroundTask,
   ConversationInsight,
   QuickScript,
-  ConversationStage
+  ConversationStage,
+  CustomerProfile,
+  ActionHistoryEntry,
+  OperationContext,
 } from "~/lib/agent/state"
+import { OPERATION_CONTEXTS } from "~/lib/agent/state"
 
 interface AgentCopilotV2Props {
   // New structured data
@@ -40,14 +46,23 @@ interface AgentCopilotV2Props {
   quickScripts?: QuickScript[]
   backgroundTasks?: BackgroundTask[]
   stages?: ConversationStage[]
+  customerProfile?: CustomerProfile
+  actionHistory?: ActionHistoryEntry[]
+  operationContext?: OperationContext
 
   // Callbacks
   onActionClick?: (actionId: string) => void
   onActionCancel?: (actionId: string) => void
+  onActionConfirm?: (actionId: string) => void
+  onActionDismiss?: (actionId: string, reason?: string) => void
   onScriptCopy?: (scriptId: string) => void
+  onProfileUpdate?: (updates: Partial<CustomerProfile>) => void
 
   // State
   isProcessing?: boolean
+  messageCount?: number
+  hasAnalyzedBefore?: boolean
+  isListening?: boolean  // Is audio playing / transcribing
 }
 
 export function AgentCopilotV2({
@@ -56,10 +71,19 @@ export function AgentCopilotV2({
   quickScripts = [],
   backgroundTasks = [],
   stages = [],
+  customerProfile = {},
+  actionHistory = [],
+  operationContext = "booking",
   onActionClick,
   onActionCancel,
+  onActionConfirm,
+  onActionDismiss,
   onScriptCopy,
+  onProfileUpdate,
   isProcessing = false,
+  messageCount = 0,
+  hasAnalyzedBefore = false,
+  isListening = false,
 }: AgentCopilotV2Props) {
   const [scriptsExpanded, setScriptsExpanded] = useState(false)
   const [autoExecuteCountdown, setAutoExecuteCountdown] = useState<{
@@ -79,6 +103,12 @@ export function AgentCopilotV2({
   const completedTasks = backgroundTasks
     .filter(t => t.status === "completed")
     .slice(-3)
+
+  // Get operation context config
+  const contextConfig = OPERATION_CONTEXTS[operationContext]
+
+  // Check if booking details should be shown
+  const showBookingDetails = contextConfig.sections.bookingDetails
 
   // Check if insights have meaningful content (not just empty/generic)
   const hasMeaningfulInsights = insights && (
@@ -111,6 +141,29 @@ export function AgentCopilotV2({
 
   return (
     <div className="h-full flex flex-col bg-gray-50">
+      {/* ========== SECTION 0: BOOKING CONTEXT (CONDITIONAL) ========== */}
+      {showBookingDetails && (
+        <div className="p-4 bg-white border-b border-gray-200">
+          <BookingContext
+            profile={customerProfile}
+            onUpdate={onProfileUpdate}
+          />
+        </div>
+      )}
+
+      {/* ========== SECTION 0.5: ACTION HISTORY ========== */}
+      {(executableActions.length > 0 || actionHistory.length > 0) && (
+        <div className="p-4 bg-white border-b border-gray-200">
+          <ActionHistory
+            currentActions={executableActions}
+            history={actionHistory}
+            onConfirm={onActionConfirm}
+            onDismiss={onActionDismiss}
+            onActionClick={onActionClick}
+          />
+        </div>
+      )}
+
       {/* ========== SECTION 1: CRITICAL ACTION ========== */}
       {criticalAction && (
         <div className="p-4 bg-white border-b border-gray-200">
@@ -358,15 +411,38 @@ export function AgentCopilotV2({
         </div>
       )}
 
-      {/* Empty State - Listening (only show if no meaningful content yet) */}
+      {/* Empty State - Idle, Building Context, or Ready (only show if no meaningful content yet) */}
       {!criticalAction && activeTasks.length === 0 && !isProcessing && !hasMeaningfulInsights && (
         <div className="flex-1 flex items-center justify-center p-8 text-center">
           <div>
-            <div className="text-4xl mb-2">👂</div>
-            <p className="text-sm text-gray-600 font-medium">Listening to conversation...</p>
-            <p className="text-xs text-gray-500 mt-1">
-              I'll suggest actions when needed
-            </p>
+            {isListening && !hasAnalyzedBefore && messageCount < 3 ? (
+              // Building context during audio playback
+              <>
+                <div className="text-4xl mb-2">🧠</div>
+                <p className="text-sm text-gray-600 font-medium">Building context...</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Listening to conversation
+                </p>
+              </>
+            ) : hasAnalyzedBefore || messageCount >= 3 ? (
+              // Ready to analyze / waiting for next opportunity
+              <>
+                <div className="text-4xl mb-2">👂</div>
+                <p className="text-sm text-gray-600 font-medium">Listening to conversation...</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  I'll suggest actions when needed
+                </p>
+              </>
+            ) : (
+              // Idle - no audio playing, no file uploaded
+              <>
+                <div className="text-4xl mb-2">💤</div>
+                <p className="text-sm text-gray-600 font-medium">Waiting for conversation</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Upload audio to begin
+                </p>
+              </>
+            )}
           </div>
         </div>
       )}
