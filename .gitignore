@@ -1,0 +1,16 @@
+# MCP Server Project (too large for git)
+office-hours-buildathon/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
