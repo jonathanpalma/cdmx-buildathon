@@ -80,6 +80,14 @@ export function AgentCopilotV2({
     .filter(t => t.status === "completed")
     .slice(-3)
 
+  // Check if insights have meaningful content (not just empty/generic)
+  const hasMeaningfulInsights = insights && (
+    (insights.concerns && insights.concerns.length > 0) ||
+    (insights.missingInformation && insights.missingInformation.length > 0) ||
+    insights.detectedEmotion ||
+    (insights.healthScore && insights.healthScore < 60) // Only show health if concerning
+  )
+
   const getHealthColor = (score: number) => {
     if (score >= 70) return "text-green-600"
     if (score >= 40) return "text-orange-600"
@@ -202,31 +210,35 @@ export function AgentCopilotV2({
       )}
 
       {/* ========== SECTION 3: INSIGHTS (Subtle) ========== */}
-      {insights && (
+      {hasMeaningfulInsights && (
         <div className="p-4 bg-gray-50 border-b border-gray-200">
           <h3 className="font-semibold text-xs text-gray-700 mb-3 uppercase tracking-wide">
             Conversation Insights
           </h3>
 
           <div className="space-y-2">
-            {/* Health Score */}
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-gray-600">Health:</span>
-              <span className={cn("font-semibold", getHealthColor(insights.healthScore))}>
-                {insights.healthScore}%
-              </span>
-            </div>
+            {/* Health Score - only show if concerning (<60) */}
+            {insights && insights.healthScore < 60 && (
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-600">Health:</span>
+                <span className={cn("font-semibold", getHealthColor(insights.healthScore))}>
+                  {insights.healthScore}%
+                </span>
+              </div>
+            )}
 
-            {/* Current Stage */}
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-gray-600">Stage:</span>
-              <span className="font-medium text-gray-900 text-xs">
-                {insights.currentStage}
-              </span>
-            </div>
+            {/* Current Stage - always show if available */}
+            {insights && insights.currentStage && (
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-gray-600">Stage:</span>
+                <span className="font-medium text-gray-900 text-xs">
+                  {insights.currentStage}
+                </span>
+              </div>
+            )}
 
-            {/* Customer Emotion */}
-            {insights.detectedEmotion && (
+            {/* Customer Emotion - only if not neutral */}
+            {insights && insights.detectedEmotion && insights.detectedEmotion !== "neutral" && (
               <div className="flex items-center justify-between text-sm">
                 <span className="text-gray-600">Customer:</span>
                 <span className="text-xs">
@@ -235,8 +247,8 @@ export function AgentCopilotV2({
               </div>
             )}
 
-            {/* Missing Information */}
-            {insights.missingInformation.length > 0 && (
+            {/* Missing Information - only show if not empty */}
+            {insights && insights.missingInformation && insights.missingInformation.length > 0 && (
               <div className="mt-3">
                 <div className="text-xs text-gray-700 font-medium mb-1">Missing Info:</div>
                 <ul className="text-xs text-gray-600 space-y-0.5">
@@ -247,8 +259,8 @@ export function AgentCopilotV2({
               </div>
             )}
 
-            {/* Concerns */}
-            {insights.concerns.length > 0 && (
+            {/* Concerns - only show if not empty */}
+            {insights && insights.concerns && insights.concerns.length > 0 && (
               <div className="mt-3">
                 <div className="flex items-center gap-1 text-xs text-orange-700 font-medium mb-1">
                   <AlertCircle className="h-3 w-3" />
@@ -333,8 +345,21 @@ export function AgentCopilotV2({
         </div>
       )}
 
-      {/* Empty State */}
-      {!criticalAction && activeTasks.length === 0 && !isProcessing && (
+      {/* Processing State */}
+      {isProcessing && !criticalAction && activeTasks.length === 0 && (
+        <div className="flex-1 flex items-center justify-center p-8 text-center">
+          <div>
+            <Loader2 className="h-8 w-8 text-blue-600 animate-spin mx-auto mb-3" />
+            <p className="text-sm text-gray-700 font-medium">Analyzing conversation...</p>
+            <p className="text-xs text-gray-500 mt-1">
+              Detecting intents and checking for actionable opportunities
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Empty State - Listening (only show if no meaningful content yet) */}
+      {!criticalAction && activeTasks.length === 0 && !isProcessing && !hasMeaningfulInsights && (
         <div className="flex-1 flex items-center justify-center p-8 text-center">
           <div>
             <div className="text-4xl mb-2">👂</div>
@@ -342,6 +367,26 @@ export function AgentCopilotV2({
             <p className="text-xs text-gray-500 mt-1">
               I'll suggest actions when needed
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* Spacer when insights visible but no actions */}
+      {!criticalAction && activeTasks.length === 0 && !isProcessing && hasMeaningfulInsights && (
+        <div className="flex-1" />
+      )}
+
+      {/* Status Footer - Always show when not processing */}
+      {!isProcessing && (
+        <div className="mt-auto border-t border-gray-200 bg-gray-50 p-3">
+          <div className="flex items-center justify-between text-xs text-gray-500">
+            <div className="flex items-center gap-1.5">
+              <CheckCircle className="h-3.5 w-3.5 text-green-600" />
+              <span>Analysis up to date</span>
+            </div>
+            {!criticalAction && activeTasks.length === 0 && (
+              <span className="text-gray-400">No immediate actions needed</span>
+            )}
           </div>
         </div>
       )}

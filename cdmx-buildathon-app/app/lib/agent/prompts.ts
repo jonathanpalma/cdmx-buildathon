@@ -260,7 +260,24 @@ CRITICAL RULES:
    - Max 3 quick scripts
    - If conversation flowing naturally, return empty arrays
 
-Remember: Less is more. Only suggest what's truly needed RIGHT NOW.`
+7. **Early conversation handling** (IMPORTANT):
+   - If conversation has < 5 messages total, keep suggestions MINIMAL
+   - Don't state obvious facts like "limited context" in early exchanges
+   - Don't suggest generic welcome scripts - agent already knows how to greet
+   - Only suggest actions/scripts if there's a SPECIFIC opportunity or issue
+   - For initial pleasantries ("good", "fine", "hello"), return EMPTY arrays
+   - Wait for substantive conversation before generating insights
+   - Missing information is EXPECTED early - only flag if blocking progress
+
+8. **Insight quality standards**:
+   - Concerns should be ACTIONABLE, not observations
+   - Don't flag "limited context" - that's obvious in every conversation start
+   - Don't flag missing info unless it's blocking the NEXT step
+   - Strengths should be meaningful, not generic ("rapport established")
+   - If nothing meaningful to say, keep concerns/strengths arrays EMPTY
+
+Remember: Less is more. Only suggest what's truly needed RIGHT NOW.
+SILENCE IS BETTER THAN NOISE - especially in early conversation.`
 }
 
 /**

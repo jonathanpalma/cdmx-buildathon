@@ -102,10 +102,13 @@ export default function Index() {
 
   // Execute agent call with accumulated messages
   const executeAgentCall = useCallback(async (messages: TranscriptEntry[]) => {
-    // Cancel any in-flight request
-    if (abortControllerRef.current) {
-      logger.debug("Agent cancelling previous request")
-      abortControllerRef.current.abort()
+    // Don't start a new request if one is already in progress
+    // Let it complete to avoid wasted API calls
+    if (isAgentProcessing) {
+      logger.debug("Agent call already in progress, skipping this request", {
+        pendingMessageCount: messages.length
+      })
+      return
     }
 
     abortControllerRef.current = new AbortController()
@@ -135,34 +138,46 @@ export default function Index() {
 
       if (response.ok) {
         const { state } = await response.json()
-        logger.debug("Agent response received")
+        logger.debug("Agent response received", {
+          hasExecutableActions: state.executableActions?.length > 0,
+          hasInsights: !!state.insights,
+          currentStage: state.currentStage
+        })
 
         // Check if we should force update (manual refresh)
         const shouldForceUpdate = forceUpdate
 
-        // Only update if we don't already have suggestions showing
-        // OR if the stage has progressed (important update)
-        // OR if manual refresh was clicked
-        const hasCurrentSuggestions = agentState.nextActions && agentState.nextActions.length > 0
+        // Check if we have current suggestions showing (new format)
+        const hasCurrentSuggestions = agentState.executableActions && agentState.executableActions.length > 0
+        const hasNewSuggestions = state.executableActions && state.executableActions.length > 0
         const stageChanged = state.currentStage !== agentState.currentStage
 
-        if (!hasCurrentSuggestions || stageChanged || shouldForceUpdate) {
-          logger.debug("Agent updating UI with new suggestions")
+        // ALWAYS update state, but be smart about what to show
+        // This ensures insights are always fresh, even if no actions
+        if (!hasCurrentSuggestions || stageChanged || shouldForceUpdate || hasNewSuggestions) {
+          logger.debug("Agent updating UI with new state", {
+            reason: !hasCurrentSuggestions ? "no_current" :
+                    stageChanged ? "stage_changed" :
+                    shouldForceUpdate ? "manual_refresh" : "new_suggestions"
+          })
           setAgentState(state)
           setConversationHealth(state.healthScore || 75)
-          setSuggestionTimestamp(Date.now()) // Record when suggestion was shown
+
+          // Only update timestamp if we have new executable actions
+          if (hasNewSuggestions) {
+            setSuggestionTimestamp(Date.now())
+          }
           setForceUpdate(false) // Reset flag
         } else {
-          logger.debug("Agent keeping current suggestions visible")
-          // Update background state but don't change UI
-          // This keeps context fresh without overwhelming the agent
+          logger.debug("Agent updating background context", {
+            keepingActionsVisible: true
+          })
+          // Update insights and context but keep current actions visible
           setAgentState(prev => ({
             ...state,
-            nextActions: prev.nextActions, // Keep current actions visible
-            reasoning: prev.reasoning, // Keep current reasoning
+            executableActions: prev.executableActions, // Keep current actions visible
           }))
           setConversationHealth(state.healthScore || 75)
-          // Don't update timestamp - keep showing age of current visible suggestion
         }
       }
     } catch (error) {
