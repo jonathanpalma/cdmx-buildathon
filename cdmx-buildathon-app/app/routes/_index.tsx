@@ -237,7 +237,68 @@ export default function Index() {
 
         // Add to transcript
         setTranscriptEntries((prev) => {
-          // Check if this message already exists
+          // If this chunk has speaker segments (mid-chunk speaker changes), process them separately
+          if (nextEvent.segments && nextEvent.segments.length > 1) {
+            logger.debug("Processing chunk with multiple speaker segments", {
+              chunkIndex: nextEvent.chunkIndex,
+              segmentCount: nextEvent.segments.length,
+              segments: nextEvent.segments.map((s: any) => ({
+                speaker: s.speaker,
+                text: s.text.substring(0, 20) + '...'
+              }))
+            })
+
+            // Map speaker IDs (0, 1) to role labels (agent, customer)
+            const mapSpeaker = (speakerId: number): "agent" | "customer" => {
+              // Channel 0 = Agent (left channel)
+              // Channel 1 = Customer (right channel)
+              return speakerId === 0 ? "agent" : "customer"
+            }
+
+            // Create separate entries for each speaker segment
+            let newEntries = [...prev]
+            for (const segment of nextEvent.segments) {
+              const segmentSpeaker = mapSpeaker(segment.speaker)
+              const lastEntry = newEntries[newEntries.length - 1]
+
+              // Check if we should merge with last entry
+              const shouldMerge =
+                lastEntry &&
+                lastEntry.speaker === segmentSpeaker &&
+                segment.startTime - lastEntry.timestamp < 5
+
+              if (shouldMerge) {
+                // Merge with previous segment
+                const mergedEntry: TranscriptEntry = {
+                  ...lastEntry,
+                  text: `${lastEntry.text} ${segment.text}`,
+                  confidence: (lastEntry.confidence! + segment.confidence) / 2,
+                }
+                newEntries = [...newEntries.slice(0, -1), mergedEntry]
+              } else {
+                // Create new entry for this segment
+                const segmentEntry: TranscriptEntry = {
+                  id: `segment-${nextEvent.chunkIndex}-${segment.speaker}-${segment.startTime}`,
+                  timestamp: segment.startTime,
+                  text: segment.text,
+                  speaker: segmentSpeaker,
+                  confidence: segment.confidence,
+                  isFinal: true,
+                }
+                newEntries.push(segmentEntry)
+
+                // Call agent when speaker changes
+                if (lastEntry && lastEntry.speaker !== segmentSpeaker) {
+                  callAgent(lastEntry)
+                } else if (!lastEntry) {
+                  callAgent(segmentEntry)
+                }
+              }
+            }
+            return newEntries
+          }
+
+          // No segments or single speaker - process as before
           const exists = prev.some(
             (entry) =>
               entry.timestamp === nextEvent.timestamp && entry.text === nextEvent.text

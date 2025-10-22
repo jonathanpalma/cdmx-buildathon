@@ -373,12 +373,37 @@ Deepgram uses machine learning models trained on millions of hours of audio to a
 3. **Consistency**: Maintains speaker identity across the entire conversation
 4. **Output**: Each word gets a speaker ID (0, 1, 2, etc.)
 
-**Implementation** (`app/lib/stt-service.server.ts:57-84`):
-- Enabled with `diarize=true` parameter
-- For each chunk, counts which speaker spoke the most words
-- Maps Deepgram's speaker IDs (0, 1, 2...) to "agent" or "customer"
-- First speaker = agent (typically answers the call)
-- Second speaker = customer
+**Implementation** (`app/lib/stt-service.server.ts:164-221`):
+- Enabled with `diarize=true` and `multichannel=true` parameters
+- **Word-level analysis**: Processes each word with speaker timestamp
+- **Segment detection**: Groups consecutive words by same speaker into segments
+- **Mid-chunk speaker changes**: Automatically splits when speaker changes
+- Maps speaker IDs (0, 1, 2...) to "agent" or "customer"
+  - Channel 0 (left) = Agent
+  - Channel 1 (right) = Customer
+
+**Example segment output:**
+```typescript
+// Input: "How are you today? yep Great to hear!"
+// Deepgram word-level output:
+[
+  { word: "How", speaker: 0 },      // Agent
+  { word: "are", speaker: 0 },      // Agent
+  { word: "you", speaker: 0 },      // Agent
+  { word: "today", speaker: 0 },    // Agent
+  { word: "yep", speaker: 1 },      // Customer (interruption!)
+  { word: "Great", speaker: 0 },    // Agent
+  { word: "to", speaker: 0 },       // Agent
+  { word: "hear", speaker: 0 }      // Agent
+]
+
+// Our segment output:
+[
+  { speaker: "agent", text: "How are you today?" },
+  { speaker: "customer", text: "yep" },         // Correctly identified!
+  { speaker: "agent", text: "Great to hear!" }
+]
+```
 
 ### OpenAI Whisper (Heuristic Fallback)
 
@@ -465,11 +490,34 @@ Supported in all modern browsers (Chrome, Firefox, Safari, Edge).
 
 **Cause:** Your audio file is stereo with each speaker on a separate channel (left/right)
 
-**Solution:** The system automatically mixes both stereo channels together. If you're still seeing this issue:
+**Solution:** The system automatically processes both stereo channels. If you're still seeing this issue:
 1. Check browser console for "Audio buffer info: X channel(s)" message
 2. If it shows "1 channel(s)", your file is already mono - speaker diarization should work
 3. If it shows "2 channel(s)" but you're missing speech, check the RMS values in logs
-4. The system now mixes left and right channels, capturing both speakers
+4. The system sends stereo when both speakers active, or mono when one speaker dominant
+
+### Speaker misattribution during interruptions
+
+**Problem:** When customer interrupts agent (e.g., "yep", "okay"), the interruption gets attributed to the wrong speaker.
+
+**Example:**
+```
+Agent: "Do I have the pleasure of speaking with Mr. William, how are you today yep that's great"
+         ↑ The "yep" is actually the customer!
+```
+
+**Solution (v2.1 - FIXED):**
+- System now uses **word-level speaker segments** from Deepgram
+- Automatically detects mid-chunk speaker changes
+- Splits transcript into separate entries per speaker
+- Each interruption gets its own transcript entry with correct speaker
+
+**Result:**
+```
+Agent: "Do I have the pleasure of speaking with Mr. William, how are you today"
+Customer: "yep"  ← Correctly identified!
+Agent: "that's great"
+```
 
 **How stereo call recordings work:**
 - **Industry standard**: Most telephony systems (Twilio, Avaya) record agent on left channel, customer on right channel
@@ -531,8 +579,17 @@ Current hardcoded mapping in `audio-utils.ts:258-262,269-272`.
 
 ✅ **Intelligent Speaker Detection**
 - Channel-based speaker identification (most accurate)
+- **Word-level diarization** for mid-chunk speaker changes
+- Automatic speaker segmentation when speakers interrupt each other
 - Falls back to Deepgram ML diarization for overlapping speech
 - Heuristic-based detection for Whisper (when needed)
+
+✅ **Mid-Chunk Speaker Change Handling**
+- Detects when speaker changes within a single audio chunk
+- Example: "How are you today? [AGENT] **yep** [CUSTOMER] Great to hear! [AGENT]"
+- Splits chunks into speaker segments based on word-level timestamps
+- Displays each segment with correct speaker attribution
+- Prevents misattribution of interruptions and confirmations
 
 ✅ **Race Condition Prevention**
 - Sequence numbering for all chunks

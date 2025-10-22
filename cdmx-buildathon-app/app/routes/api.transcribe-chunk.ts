@@ -173,6 +173,7 @@ export async function action({ request }: ActionFunctionArgs) {
       chunkIndex: currentChunkIndex,
       sequenceNumber: currentSequence,
       words: result.words,
+      segments: result.segments, // Speaker segments for mid-chunk speaker changes
       channelStrategy,
       deepgramSpeaker: result.speaker, // Include raw speaker ID for debugging
     })

@@ -12,6 +12,14 @@ export interface TranscriptEvent {
   chunkIndex?: number
   sequenceNumber?: number // For ordering responses correctly
   isEmpty?: boolean
+  // Speaker segments for handling mid-chunk speaker changes
+  segments?: Array<{
+    speaker: number
+    text: string
+    startTime: number
+    endTime: number
+    confidence: number
+  }>
 }
 
 interface AudioPlaybackSimulatorProps {
@@ -264,6 +272,7 @@ export function AudioPlaybackSimulator({
                     chunkIndex: chunkIndexRef.current,
                     sequenceNumber: currentSequence,
                     isEmpty: result.isEmpty || false,
+                    segments: result.segments, // Pass through speaker segments
                   })
                 } else {
                   console.error(`Failed to transcribe chunk ${chunkIndexRef.current}:`, response.statusText)

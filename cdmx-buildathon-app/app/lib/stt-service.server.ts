@@ -9,13 +9,21 @@ import { logger } from "./logger.server"
 export interface TranscriptionResult {
   text: string
   confidence?: number
-  speaker?: number // Speaker ID from diarization (0, 1, 2, etc.)
+  speaker?: number // Primary speaker ID (for backward compatibility)
   words?: Array<{
     word: string
     start: number
     end: number
     confidence: number
     speaker?: number
+  }>
+  // Speaker segments for handling mid-chunk speaker changes
+  segments?: Array<{
+    speaker: number
+    text: string
+    startTime: number
+    endTime: number
+    confidence: number
   }>
 }
 
@@ -136,7 +144,7 @@ export async function transcribeWithDeepgram(
       speakerCounts[Number.parseInt(speaker, 10)] = words.length
     }
 
-    // Determine the primary speaker for this chunk
+    // Determine the primary speaker for this chunk (for backward compatibility)
     let primarySpeaker = 0
     let maxCount = 0
     for (const [speaker, count] of Object.entries(speakerCounts)) {
@@ -153,19 +161,76 @@ export async function transcribeWithDeepgram(
     const text = allWords.map((w) => w.word).join(" ")
     const avgConfidence = totalConfidence / wordCount
 
-    // Log first few words to debug speaker assignment
-    const sampleWords = allWords.slice(0, 5).map((w) => ({
-      word: w.word,
-      speaker: w.speaker,
-      channel: w.channel,
-    }))
+    // Create speaker segments by detecting when speaker changes
+    // This handles cases like: "How are you today [AGENT] yep [CUSTOMER] that's great [AGENT]"
+    const segments: Array<{
+      speaker: number
+      text: string
+      startTime: number
+      endTime: number
+      confidence: number
+    }> = []
 
+    let currentSegment: {
+      speaker: number
+      words: typeof allWords
+    } | null = null
+
+    for (const word of allWords) {
+      if (!currentSegment || currentSegment.speaker !== word.speaker) {
+        // Speaker changed or first word - start new segment
+        if (currentSegment) {
+          // Save previous segment
+          const segmentWords = currentSegment.words
+          const segmentText = segmentWords.map(w => w.word).join(" ")
+          const segmentConfidence = segmentWords.reduce((sum, w) => sum + w.confidence, 0) / segmentWords.length
+
+          segments.push({
+            speaker: currentSegment.speaker,
+            text: segmentText,
+            startTime: segmentWords[0].start,
+            endTime: segmentWords[segmentWords.length - 1].end,
+            confidence: segmentConfidence,
+          })
+        }
+
+        // Start new segment
+        currentSegment = {
+          speaker: word.speaker,
+          words: [word],
+        }
+      } else {
+        // Same speaker - add to current segment
+        currentSegment.words.push(word)
+      }
+    }
+
+    // Don't forget the last segment
+    if (currentSegment) {
+      const segmentWords = currentSegment.words
+      const segmentText = segmentWords.map(w => w.word).join(" ")
+      const segmentConfidence = segmentWords.reduce((sum, w) => sum + w.confidence, 0) / segmentWords.length
+
+      segments.push({
+        speaker: currentSegment.speaker,
+        text: segmentText,
+        startTime: segmentWords[0].start,
+        endTime: segmentWords[segmentWords.length - 1].end,
+        confidence: segmentConfidence,
+      })
+    }
+
+    // Log segments to see speaker changes
     logger.debug("Parsed multichannel response", {
       channels: channels.length,
       totalWords: allWords.length,
       primarySpeaker,
       speakerCounts,
-      sampleWords,
+      segmentCount: segments.length,
+      segments: segments.map(s => ({
+        speaker: s.speaker,
+        text: s.text.substring(0, 30) + (s.text.length > 30 ? '...' : ''),
+      })),
       text: `${text.substring(0, 100)}...`,
     })
 
@@ -174,6 +239,7 @@ export async function transcribeWithDeepgram(
       confidence: avgConfidence,
       speaker: primarySpeaker,
       words: allWords,
+      segments, // Include speaker segments for fine-grained display
     }
   } catch (error) {
     logger.error("Deepgram transcription error", { error })
