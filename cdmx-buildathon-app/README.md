@@ -1,4 +1,4 @@
-# CloseLoop - AI Call Center Copilot
+# OneVoice - AI Call Center Copilot
 
 AI-powered copilot that supports call center agents during live conversations, built for the CDMX Buildathon.
 
@@ -11,7 +11,7 @@ Call centers lose sales opportunities because:
 
 ## 🚀 Solution
 
-**CloseLoop** provides real-time support for call center agents with:
+**OneVoice** provides real-time support for call center agents with:
 
 1. **🎧 Real-Time Intelligence** - Live transcription, intent detection, and drop-off risk analysis
 2. **💡 Smart Guidance** - Persuasive suggestions and upsell opportunities

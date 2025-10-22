@@ -1,6 +1,6 @@
 # Audio Simulation System
 
-Real-time audio transcription and conversation guidance system for CloseLoop.
+Real-time audio transcription and conversation guidance system for OneVoice.
 
 ## Overview
 

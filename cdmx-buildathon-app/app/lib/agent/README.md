@@ -1,4 +1,4 @@
-# CloseLoop AI Agent
+# OneVoice AI Agent
 
 Minimalistic LangGraph-based AI agent for real-time call center guidance.
 

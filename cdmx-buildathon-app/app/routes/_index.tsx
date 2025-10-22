@@ -10,7 +10,7 @@ import { validateEnvironment } from "~/lib/env-validation.server"
 
 export function meta({}: Route.MetaArgs) {
   return [
-    { title: "CloseLoop - AI Call Center Copilot" },
+    { title: "OneVoice - AI Call Center Copilot" },
     { name: "description", content: "AI-powered copilot for call center agents" },
   ];
 }
@@ -338,7 +338,7 @@ export default function Index() {
         <div className="max-w-7xl mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <h1 className="text-xl font-bold text-gray-900">CloseLoop</h1>
+              <h1 className="text-xl font-bold text-gray-900">OneVoice</h1>
               <span className="text-sm text-gray-500">AI Call Center Copilot</span>
             </div>
             {audioFile && (

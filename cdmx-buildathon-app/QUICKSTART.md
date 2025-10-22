@@ -1,6 +1,6 @@
-# CloseLoop - Quick Start Guide
+# OneVoice - Quick Start Guide
 
-Get up and running with CloseLoop in under 2 minutes!
+Get up and running with OneVoice in under 2 minutes!
 
 ## ⚡ Quick Start
 
