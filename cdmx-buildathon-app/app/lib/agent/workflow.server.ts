@@ -22,6 +22,7 @@ import {
   buildActionGenerationPrompt,
   buildHealthScorePrompt,
 } from "./prompts"
+import { logger } from "../logger.server"
 
 // Initialize Claude Haiku (fast, cost-effective, excellent at structured output)
 const model = new ChatAnthropic({
@@ -38,7 +39,7 @@ const model = new ChatAnthropic({
  * Purpose: Understand what the customer wants and extract key info
  */
 async function analyzeIntent(state: AgentState): Promise<Partial<AgentState>> {
-  console.log("[Agent] Analyzing intent...")
+  logger.debug("Agent analyzing intent")
 
   try {
     const prompt = buildIntentAnalysisPrompt(state)
@@ -75,7 +76,7 @@ async function analyzeIntent(state: AgentState): Promise<Partial<AgentState>> {
       customerProfile: updatedProfile,
     }
   } catch (error) {
-    console.error("[Agent] Intent analysis failed:", error)
+    logger.error("Agent intent analysis failed", { error })
     return { detectedIntents: [] }
   }
 }
@@ -87,7 +88,7 @@ async function analyzeIntent(state: AgentState): Promise<Partial<AgentState>> {
 async function manageConversationStages(
   state: AgentState
 ): Promise<Partial<AgentState>> {
-  console.log("[Agent] Managing conversation stages...")
+  logger.debug("Agent managing conversation stages")
 
   try {
     const prompt = buildStageManagementPrompt(state)
@@ -104,7 +105,7 @@ async function manageConversationStages(
       reasoning: result.reasoning,
     }
   } catch (error) {
-    console.error("[Agent] Stage management failed:", error)
+    logger.error("Agent stage management failed", { error })
     return {}
   }
 }
@@ -116,7 +117,7 @@ async function manageConversationStages(
 async function generateActions(
   state: AgentState
 ): Promise<Partial<AgentState>> {
-  console.log("[Agent] Generating actions...")
+  logger.debug("Agent generating actions")
 
   try {
     const prompt = buildActionGenerationPrompt(state)
@@ -127,7 +128,10 @@ async function generateActions(
 
     const result = JSON.parse(response.content as string)
 
-    console.log(`[Agent] Generated ${(result.actions || []).length} actions, ${(result.backgroundTasks || []).length} background tasks`)
+    logger.debug("Agent generated actions", {
+      actionCount: (result.actions || []).length,
+      backgroundTaskCount: (result.backgroundTasks || []).length
+    })
 
     return {
       nextActions: result.actions || [],
@@ -135,7 +139,7 @@ async function generateActions(
       backgroundTasks: result.backgroundTasks || [],
     }
   } catch (error) {
-    console.error("[Agent] Action generation failed:", error)
+    logger.error("Agent action generation failed", { error })
     return { nextActions: [] }
   }
 }
@@ -147,7 +151,7 @@ async function generateActions(
 async function calculateHealthScore(
   state: AgentState
 ): Promise<Partial<AgentState>> {
-  console.log("[Agent] Calculating health score...")
+  logger.debug("Agent calculating health score")
 
   // Skip if less than 3 messages
   if (state.messages.length < 3) {
@@ -167,7 +171,7 @@ async function calculateHealthScore(
       healthScore: Math.max(0, Math.min(100, result.score || 75)),
     }
   } catch (error) {
-    console.error("[Agent] Health score calculation failed:", error)
+    logger.error("Agent health score calculation failed", { error })
     return {}
   }
 }
@@ -222,7 +226,7 @@ function buildWorkflow() {
         default: () => [],
       },
     },
-  })
+  } as any)
 
   // Add nodes (steps in the workflow)
   workflow.addNode("analyze_intent", analyzeIntent)
@@ -231,11 +235,11 @@ function buildWorkflow() {
   workflow.addNode("calculate_health", calculateHealthScore)
 
   // Define edges (flow between steps)
-  workflow.addEdge(START, "analyze_intent")
-  workflow.addEdge("analyze_intent", "manage_stages")
-  workflow.addEdge("manage_stages", "generate_actions")
-  workflow.addEdge("generate_actions", "calculate_health")
-  workflow.addEdge("calculate_health", END)
+  workflow.addEdge(START, "analyze_intent" as any)
+  workflow.addEdge("analyze_intent" as any, "manage_stages" as any)
+  workflow.addEdge("manage_stages" as any, "generate_actions" as any)
+  workflow.addEdge("generate_actions" as any, "calculate_health" as any)
+  workflow.addEdge("calculate_health" as any, END)
 
   return workflow.compile()
 }
@@ -253,7 +257,10 @@ export async function executeAgent(
   currentState: Partial<AgentState>,
   newMessage: TranscriptMessage
 ): Promise<AgentState> {
-  console.log("[Agent] Executing workflow for new message:", newMessage)
+  logger.debug("Agent executing workflow for new message", {
+    speaker: newMessage.speaker,
+    textLength: newMessage.text.length
+  })
 
   // Merge with default state
   const inputState: AgentState = {
@@ -264,12 +271,12 @@ export async function executeAgent(
 
   try {
     // Run the agent workflow
-    const result = await agent.invoke(inputState)
+    const result = await agent.invoke(inputState as any)
 
-    console.log("[Agent] Workflow complete. Stage:", result.currentStage)
-    return result as any as AgentState
+    logger.info("Agent workflow complete", { currentStage: result.currentStage })
+    return result as AgentState
   } catch (error) {
-    console.error("[Agent] Workflow execution failed:", error)
+    logger.error("Agent workflow execution failed", { error })
     // Return current state on error
     return inputState
   }

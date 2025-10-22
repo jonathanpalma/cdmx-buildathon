@@ -10,6 +10,7 @@
 import type { Route } from "./+types/api.agent"
 import { executeAgent } from "~/lib/agent/workflow.server"
 import type { AgentState, TranscriptMessage } from "~/lib/agent/state"
+import { logger } from "~/lib/logger.server"
 
 export async function action({ request }: Route.ActionArgs) {
   if (request.method !== "POST") {
@@ -42,7 +43,7 @@ export async function action({ request }: Route.ActionArgs) {
       state: updatedState,
     })
   } catch (error) {
-    console.error("[API] Agent execution error:", error)
+    logger.error("API agent execution error", { error })
     return Response.json(
       {
         error: "Failed to execute agent",

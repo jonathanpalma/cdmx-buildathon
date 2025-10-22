@@ -5,20 +5,17 @@
  */
 
 import type { LoaderFunctionArgs } from "react-router"
-import { transcribeAudio, mockTranscription } from "~/lib/stt-service.server"
+import { transcribeAudio } from "~/lib/stt-service.server"
+import { logger } from "~/lib/logger.server"
 
 export async function loader({ request }: LoaderFunctionArgs) {
-  const url = new URL(request.url)
-  const useMock = url.searchParams.get("mock") === "true"
-  const chunkDuration = parseInt(url.searchParams.get("chunkDuration") || "2")
-
   // Create SSE stream
   const stream = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder()
 
       // Helper to send SSE message
-      const sendEvent = (data: any, event = "message") => {
+      const sendEvent = (data: unknown, event = "message") => {
         const message = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
         controller.enqueue(encoder.encode(message))
       }
@@ -27,51 +24,17 @@ export async function loader({ request }: LoaderFunctionArgs) {
         // Send initial connection message
         sendEvent({ type: "connected", timestamp: Date.now() }, "status")
 
-        // If using mock mode, simulate streaming
-        if (useMock) {
-          let chunkIndex = 0
-          const mockInterval = chunkDuration * 1000
-
-          const intervalId = setInterval(() => {
-            const result = mockTranscription(chunkIndex)
-            const speaker = chunkIndex % 2 === 0 ? "agent" : "customer"
-
-            sendEvent({
-              type: "transcript",
-              timestamp: chunkIndex * chunkDuration,
-              text: result.text,
-              speaker,
-              confidence: result.confidence,
-              isFinal: true,
-              chunkIndex,
-            })
-
-            chunkIndex++
-
-            // Stop after 10 chunks (20 seconds of conversation)
-            if (chunkIndex >= 10) {
-              clearInterval(intervalId)
-              sendEvent({ type: "complete", timestamp: Date.now() }, "status")
-              controller.close()
-            }
-          }, mockInterval)
-
-          // Clean up on stream close
-          return () => clearInterval(intervalId)
-        }
-
-        // For real transcription, we'd process uploaded chunks
-        // This would be called by the client sending chunks via POST
+        // For real transcription, clients should send audio chunks via POST
         sendEvent(
           {
             type: "error",
-            message: "Real-time transcription requires audio chunks to be sent via POST",
+            message: "Real-time transcription requires audio chunks to be sent via POST to /api/transcribe-chunk",
           },
           "error"
         )
         controller.close()
       } catch (error) {
-        console.error("Stream error:", error)
+        logger.error("Stream error", { error })
         sendEvent(
           {
             type: "error",
@@ -119,7 +82,7 @@ export async function action({ request }: LoaderFunctionArgs) {
       words: result.words,
     })
   } catch (error) {
-    console.error("Transcription error:", error)
+    logger.error("Transcription error", { error })
     return Response.json(
       {
         error: error instanceof Error ? error.message : "Transcription failed",

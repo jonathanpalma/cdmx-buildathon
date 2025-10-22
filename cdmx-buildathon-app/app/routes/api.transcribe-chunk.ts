@@ -1,5 +1,6 @@
 import type { ActionFunctionArgs } from "react-router"
 import { transcribeAudio } from "~/lib/stt-service.server"
+import { logger } from "~/lib/logger.server"
 
 // Global state for speaker tracking
 // Maps Deepgram speaker IDs (0, 1, 2...) to "agent" or "customer"
@@ -90,9 +91,11 @@ export async function action({ request }: ActionFunctionArgs) {
       return Response.json({ error: "No audio file provided" }, { status: 400 })
     }
 
-    console.log(
-      `Processing chunk ${chunkIndex} at ${timestamp}s (${(audioBlob.size / 1024).toFixed(2)} KB)`
-    )
+    logger.debug("Processing audio chunk", {
+      chunkIndex,
+      timestamp,
+      sizeKB: (audioBlob.size / 1024).toFixed(2)
+    })
 
     // Convert File to Blob
     const blob = new Blob([await audioBlob.arrayBuffer()], { type: audioBlob.type })
@@ -102,21 +105,18 @@ export async function action({ request }: ActionFunctionArgs) {
 
     const currentChunkIndex = parseInt(chunkIndex, 10)
 
-    console.log(
-      `Transcription complete for chunk ${chunkIndex}:`,
-      {
-        text: result.text,
-        textLength: result.text.length,
-        speaker: result.speaker,
-        confidence: result.confidence,
-        wordsCount: result.words?.length || 0,
-        isEmpty: !result.text || result.text.trim().length === 0
-      }
-    )
+    logger.debug("Transcription complete for chunk", {
+      chunkIndex,
+      textLength: result.text.length,
+      speaker: result.speaker,
+      confidence: result.confidence,
+      wordsCount: result.words?.length || 0,
+      isEmpty: !result.text || result.text.trim().length === 0
+    })
 
     // Skip empty transcriptions (silence or no speech)
     if (!result.text || result.text.trim().length === 0) {
-      console.log(`Skipping chunk ${chunkIndex} - no speech detected`)
+      logger.debug("Skipping chunk - no speech detected", { chunkIndex })
       return Response.json({
         timestamp: parseFloat(timestamp),
         text: "",
@@ -134,11 +134,17 @@ export async function action({ request }: ActionFunctionArgs) {
     if (result.speaker !== undefined) {
       // Deepgram provides speaker diarization - use it
       speaker = mapSpeakerToRole(result.speaker)
-      console.log(`Using Deepgram diarization: Speaker ${result.speaker} → ${speaker}`)
+      logger.debug("Using Deepgram diarization", {
+        deepgramSpeaker: result.speaker,
+        mappedRole: speaker
+      })
     } else {
       // Whisper doesn't provide diarization - use heuristic
       speaker = inferSpeakerForWhisper(result.text, currentChunkIndex)
-      console.log(`Using heuristic diarization: ${speaker} (consecutive: ${consecutiveChunksFromSameSpeaker})`)
+      logger.debug("Using heuristic diarization", {
+        speaker,
+        consecutiveChunks: consecutiveChunksFromSameSpeaker
+      })
     }
 
     return Response.json({
@@ -151,7 +157,7 @@ export async function action({ request }: ActionFunctionArgs) {
       deepgramSpeaker: result.speaker, // Include raw speaker ID for debugging
     })
   } catch (error) {
-    console.error("Error transcribing audio chunk:", error)
+    logger.error("Error transcribing audio chunk", { error })
     return Response.json(
       {
         error: "Failed to transcribe audio",

@@ -5,6 +5,8 @@ import { AudioPlaybackSimulator } from "~/components/audio/audio-playback-simula
 import { LiveTranscriptImproved as LiveTranscript, type TranscriptEntry } from "~/components/audio/live-transcript-improved"
 import { AgentCopilot, type CurrentStepData } from "~/components/copilot"
 import type { AgentState, ConversationStage } from "~/lib/agent/state"
+import { logger } from "~/lib/logger.client"
+import { validateEnvironment } from "~/lib/env-validation.server"
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -13,47 +15,13 @@ export function meta({}: Route.MetaArgs) {
   ];
 }
 
-// Helper functions for stage data
-function getStageDescription(stageIndex: number): string {
-  const descriptions = [
-    "Establish rapport and identify customer needs",
-    "Gather travel details and preferences",
-    "Match customer needs to ideal property",
-    "Present value and close the booking",
-    "Confirm booking and set expectations",
-  ]
-  return descriptions[stageIndex] || descriptions[0]
-}
+export async function loader() {
+  // Validate environment variables on page load
+  const envValidation = validateEnvironment()
 
-function getTipsForStage(stageIndex: number): string[] {
-  const tips: Record<number, string[]> = {
-    0: [
-      "Smile while speaking - it changes your tone",
-      "Use customer's name if you have it",
-      "Listen for emotional cues (excitement, hesitation)",
-    ],
-    1: [
-      "Ask about special occasions (anniversary, birthday)",
-      "Note dietary restrictions or accessibility needs",
-      "Capture budget range without being pushy",
-    ],
-    2: [
-      "Use words like 'perfect for your family' to personalize",
-      "Mention 2-3 key amenities that match their needs",
-      "Create urgency with limited availability or expiring promos",
-    ],
-    3: [
-      "Frame as 'per person per night' to make it feel affordable",
-      "Compare to alternative vacation costs (airfare + hotel + food)",
-      "Ask if they want to secure the reservation",
-    ],
-    4: [
-      "Thank them for choosing Palace Resorts",
-      "Mention post-booking concierge services",
-      "Ask for referrals if conversation went well",
-    ],
+  return {
+    envValidation
   }
-  return tips[stageIndex] || []
 }
 
 export default function Index() {
@@ -127,7 +95,7 @@ export default function Index() {
   const executeAgentCall = useCallback(async (messages: TranscriptEntry[]) => {
     // Cancel any in-flight request
     if (abortControllerRef.current) {
-      console.log("[Agent] Cancelling previous request")
+      logger.debug("Agent cancelling previous request")
       abortControllerRef.current.abort()
     }
 
@@ -138,7 +106,9 @@ export default function Index() {
       // Get the last message (most recent)
       const lastMessage = messages[messages.length - 1]
 
-      console.log(`[Agent] Executing with ${messages.length} accumulated message(s)`)
+      logger.debug("Agent executing with accumulated messages", {
+        messageCount: messages.length
+      })
 
       const response = await fetch("/api/agent", {
         signal: abortControllerRef.current.signal,
@@ -156,7 +126,7 @@ export default function Index() {
 
       if (response.ok) {
         const { state } = await response.json()
-        console.log("[Agent] Response received")
+        logger.debug("Agent response received")
 
         // Check if we should force update (manual refresh)
         const shouldForceUpdate = forceUpdate
@@ -168,13 +138,13 @@ export default function Index() {
         const stageChanged = state.currentStage !== agentState.currentStage
 
         if (!hasCurrentSuggestions || stageChanged || shouldForceUpdate) {
-          console.log("[Agent] Updating UI with new suggestions")
+          logger.debug("Agent updating UI with new suggestions")
           setAgentState(state)
           setConversationHealth(state.healthScore || 75)
           setSuggestionTimestamp(Date.now()) // Record when suggestion was shown
           setForceUpdate(false) // Reset flag
         } else {
-          console.log("[Agent] Keeping current suggestions visible (agent still working on them)")
+          logger.debug("Agent keeping current suggestions visible")
           // Update background state but don't change UI
           // This keeps context fresh without overwhelming the agent
           setAgentState(prev => ({
@@ -188,10 +158,10 @@ export default function Index() {
       }
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        console.log("[Agent] Request cancelled (newer message arrived)")
+        logger.debug("Agent request cancelled (newer message arrived)")
         return
       }
-      console.error("[Agent] Call failed:", error)
+      logger.error("Agent call failed", { error })
     } finally {
       setIsAgentProcessing(false)
     }
@@ -201,19 +171,21 @@ export default function Index() {
   const callAgent = useCallback((newEntry: TranscriptEntry) => {
     // Add to pending messages
     pendingMessagesRef.current.push(newEntry)
-    console.log(`[Agent] Message queued (${pendingMessagesRef.current.length} pending)`)
+    logger.debug("Agent message queued", {
+      pendingCount: pendingMessagesRef.current.length
+    })
 
     // Cancel existing debounce timer
     if (debounceTimerRef.current) {
-      console.log("[Agent] Resetting debounce timer")
+      logger.debug("Agent resetting debounce timer")
       clearTimeout(debounceTimerRef.current)
     }
 
     // Set up max wait timer (force execution after 8s even if still receiving messages)
     if (!maxWaitTimerRef.current) {
-      console.log("[Agent] Starting max wait timer (8s)")
+      logger.debug("Agent starting max wait timer (8s)")
       maxWaitTimerRef.current = setTimeout(() => {
-        console.log("[Agent] Max wait timer triggered - forcing execution")
+        logger.debug("Agent max wait timer triggered - forcing execution")
         if (debounceTimerRef.current) {
           clearTimeout(debounceTimerRef.current)
         }
@@ -226,7 +198,7 @@ export default function Index() {
 
     // Debounce: wait 2.5s of silence before calling agent
     debounceTimerRef.current = setTimeout(() => {
-      console.log("[Agent] Debounce timer triggered - executing")
+      logger.debug("Agent debounce timer triggered - executing")
       if (maxWaitTimerRef.current) {
         clearTimeout(maxWaitTimerRef.current)
         maxWaitTimerRef.current = null
@@ -307,7 +279,7 @@ export default function Index() {
   }, [callAgent])
 
   const handleActionClick = useCallback((actionId: string) => {
-    console.log("Action clicked:", actionId)
+    logger.info("Action clicked", { actionId })
 
     // Clear the current suggestions to allow new ones to appear
     // This signals "I'm working on this suggestion, show me the next one when ready"
@@ -323,11 +295,11 @@ export default function Index() {
 
   const handleFeedback = useCallback((actionId: string, positive: boolean) => {
     // TODO: Track agent feedback for ML improvement
-    console.log("Feedback:", actionId, positive ? "👍" : "👎")
+    logger.info("Feedback received", { actionId, positive })
   }, [])
 
   const handleRefresh = useCallback(() => {
-    console.log("[Agent] Manual refresh requested")
+    logger.debug("Agent manual refresh requested")
 
     // Set force update flag to bypass UI update logic
     setForceUpdate(true)

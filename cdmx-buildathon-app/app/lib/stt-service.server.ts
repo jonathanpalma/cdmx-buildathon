@@ -4,6 +4,7 @@
  */
 
 import { createClient } from "@deepgram/sdk"
+import { logger } from "./logger.server"
 
 export interface TranscriptionResult {
   text: string
@@ -49,7 +50,7 @@ export async function transcribeWithDeepgram(
     )
 
     if (error) {
-      console.error("Deepgram SDK error:", error)
+      logger.error("Deepgram SDK error", { error: error.message })
       throw new Error(`Deepgram transcription failed: ${error.message}`)
     }
 
@@ -57,7 +58,7 @@ export async function transcribeWithDeepgram(
       throw new Error("No result from Deepgram")
     }
 
-    console.log("Deepgram response:", {
+    logger.debug("Deepgram response", {
       hasResults: !!result.results,
       hasChannels: !!result.results?.channels,
       channelCount: result.results?.channels?.length || 0,
@@ -67,7 +68,7 @@ export async function transcribeWithDeepgram(
     const channels = result.results?.channels || []
 
     if (channels.length === 0) {
-      console.warn("No channels in Deepgram response")
+      logger.warn("No channels in Deepgram response")
       return { text: "", confidence: 0, speaker: undefined }
     }
 
@@ -87,7 +88,7 @@ export async function transcribeWithDeepgram(
 
     channels.forEach((channel, channelIndex: number) => {
       const alternative = channel?.alternatives?.[0]
-      console.log(`Channel ${channelIndex}:`, {
+      logger.debug(`Channel ${channelIndex} processing`, {
         hasWords: !!alternative?.words,
         wordCount: alternative?.words?.length || 0,
         transcript: alternative?.transcript?.substring(0, 50),
@@ -116,7 +117,7 @@ export async function transcribeWithDeepgram(
     })
 
     if (allWords.length === 0) {
-      console.warn("No words found in any channel")
+      logger.warn("No words found in any channel")
       return { text: "", confidence: 0, speaker: undefined }
     }
 
@@ -159,7 +160,7 @@ export async function transcribeWithDeepgram(
       channel: w.channel,
     }))
 
-    console.log("Parsed multichannel response:", {
+    logger.debug("Parsed multichannel response", {
       channels: channels.length,
       totalWords: allWords.length,
       primarySpeaker,
@@ -175,7 +176,7 @@ export async function transcribeWithDeepgram(
       words: allWords,
     }
   } catch (error) {
-    console.error("Deepgram transcription error:", error)
+    logger.error("Deepgram transcription error", { error })
     throw error
   }
 }
@@ -246,12 +247,12 @@ export async function transcribeAudio(
       return await transcribeWithWhisper(audioBlob)
     }
   } catch (error) {
-    console.error(`Transcription error with ${selectedProvider}:`, error)
+    logger.error(`Transcription error with ${selectedProvider}`, { error })
 
     // Try fallback provider
     if (provider === "auto") {
       const fallbackProvider = selectedProvider === "deepgram" ? "whisper" : "deepgram"
-      console.log(`Attempting fallback to ${fallbackProvider}`)
+      logger.info(`Attempting fallback to ${fallbackProvider}`)
 
       try {
         if (fallbackProvider === "deepgram") {
@@ -260,16 +261,7 @@ export async function transcribeAudio(
           return await transcribeWithWhisper(audioBlob)
         }
       } catch (fallbackError) {
-        console.error(`Fallback transcription error:`, fallbackError)
-      }
-    }
-
-    // If all else fails, return mock data for development
-    if (process.env.NODE_ENV === "development") {
-      console.warn("Using mock transcription data for development")
-      return {
-        text: "[Mock transcription - API key not configured]",
-        confidence: 0.5,
+        logger.error(`Fallback transcription error`, { error: fallbackError })
       }
     }
 
@@ -277,27 +269,3 @@ export async function transcribeAudio(
   }
 }
 
-/**
- * Mock transcription for testing/demo without API keys
- */
-export function mockTranscription(chunkIndex: number): TranscriptionResult {
-  const mockTranscripts = [
-    "Hi, thank you for calling Palace Resorts. How can I help you today?",
-    "Hello! I'm interested in booking a family vacation to Cancun.",
-    "That's wonderful! When are you looking to travel?",
-    "We're thinking sometime in December, around the holidays.",
-    "Great choice! December is beautiful in Cancun. How many people will be traveling?",
-    "It'll be me, my wife, and our two kids - ages 8 and 12.",
-    "Perfect! I'd like to recommend Beach Palace Cancún. It's very family-friendly.",
-    "That sounds good. What's included in the package?",
-    "It's all-inclusive - meals, drinks, water sports, and kids activities.",
-    "What about pricing? We're trying to stay within budget.",
-  ]
-
-  const index = chunkIndex % mockTranscripts.length
-
-  return {
-    text: mockTranscripts[index],
-    confidence: 0.85 + Math.random() * 0.15,
-  }
-}
