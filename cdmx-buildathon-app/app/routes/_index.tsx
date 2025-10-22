@@ -3,8 +3,7 @@ import { useState, useCallback, useMemo } from "react"
 import { AudioUpload } from "~/components/audio/audio-upload"
 import { AudioPlaybackSimulator } from "~/components/audio/audio-playback-simulator"
 import { LiveTranscriptImproved as LiveTranscript, type TranscriptEntry } from "~/components/audio/live-transcript-improved"
-import { ConversationNavigator } from "~/components/conversation"
-import type { ConversationStageData, ConversationPathData } from "~/components/conversation"
+import { AgentCopilot, type ConversationStage, type CurrentStepData, type NextAction } from "~/components/copilot"
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -126,7 +125,7 @@ export default function Index() {
   const [conversationHealth, setConversationHealth] = useState(75)
 
   // Conversation stages (memoized to avoid recreating on every render)
-  const stages = useMemo<ConversationStageData[]>(() => [
+  const stages = useMemo<ConversationStage[]>(() => [
     {
       id: "greeting",
       label: "Initial Greeting",
@@ -153,6 +152,185 @@ export default function Index() {
       status: currentStageIndex === 4 ? "current" : "future",
     },
   ], [currentStageIndex])
+
+  // Current step data based on stage (memoized)
+  const currentStepData = useMemo<CurrentStepData>(() => {
+    const stageData: Record<number, CurrentStepData> = {
+      0: {
+        stage: "Initial Greeting",
+        description: "Establish rapport and identify customer needs",
+        aiSuggestion: "Customer just joined. Start with warm greeting and open-ended question.",
+        nextActions: [
+          {
+            id: "greet",
+            label: "Introduce yourself warmly",
+            description: "Use customer's name if available",
+            priority: "recommended",
+            confidence: 0.95,
+            reasoning: "Building rapport increases booking probability by 23%"
+          },
+          {
+            id: "ask-help",
+            label: "Ask how you can help",
+            description: "Use open-ended question to uncover needs",
+            priority: "recommended",
+            confidence: 0.92,
+          },
+        ],
+        script: "Good morning! Thank you for calling Palace Resorts. My name is Sarah. How can I help make your vacation dreams come true today?",
+        tips: [
+          "Smile while speaking - it changes your tone",
+          "Use customer's name if you have it",
+          "Listen for emotional cues (excitement, hesitation)"
+        ]
+      },
+      1: {
+        stage: "Needs Assessment",
+        description: "Gather travel details and preferences",
+        aiSuggestion: "Customer mentioned 'family vacation'. Focus on family-friendly options and kids activities.",
+        nextActions: [
+          {
+            id: "ask-dates",
+            label: "Confirm travel dates",
+            description: "Ask about flexibility if dates are tight",
+            priority: "critical",
+            confidence: 0.98,
+            reasoning: "Date availability is the primary booking constraint"
+          },
+          {
+            id: "ask-guests",
+            label: "Identify number of travelers",
+            description: "Include ages of children for room planning",
+            priority: "critical",
+            confidence: 0.96,
+          },
+          {
+            id: "ask-budget",
+            label: "Understand budget expectations",
+            description: "Frame as 'investment in memories' not cost",
+            priority: "recommended",
+            confidence: 0.85,
+            reasoning: "Knowing budget early prevents mismatched expectations"
+          },
+        ],
+        script: "I'd love to help you plan the perfect family vacation! Can you tell me when you're looking to travel and how many people will be joining you?",
+        tips: [
+          "Ask about special occasions (anniversary, birthday)",
+          "Note dietary restrictions or accessibility needs",
+          "Capture budget range without being pushy"
+        ]
+      },
+      2: {
+        stage: "Property Selection",
+        description: "Match customer needs to ideal property",
+        aiSuggestion: "Customer has 2 kids (ages 8, 12) and mentioned 'beach'. Recommend Beach Palace with kids-stay-free promo.",
+        nextActions: [
+          {
+            id: "recommend-property",
+            label: "Suggest Beach Palace Cancún",
+            description: "Highlight family amenities and current promotion",
+            priority: "recommended",
+            confidence: 0.88,
+            reasoning: "95% match based on: family size, budget, preferences"
+          },
+          {
+            id: "check-availability",
+            label: "Check room availability",
+            description: "For requested dates (Dec 15-22)",
+            priority: "critical",
+            confidence: 0.94,
+          },
+          {
+            id: "mention-promo",
+            label: "Highlight kids-stay-free offer",
+            description: "Save up to 40% - expires end of month",
+            priority: "recommended",
+            confidence: 0.91,
+            reasoning: "Creates urgency and demonstrates value"
+          },
+        ],
+        script: "Based on what you've shared, Beach Palace Cancún would be perfect for your family! It's in the heart of the Hotel Zone with beautiful beaches. We have a kids-stay-free promotion that could save you up to 40%.",
+        tips: [
+          "Use words like 'perfect for your family' to personalize",
+          "Mention 2-3 key amenities that match their needs",
+          "Create urgency with limited availability or expiring promos"
+        ]
+      },
+      3: {
+        stage: "Pricing & Quote",
+        description: "Present value and close the booking",
+        aiSuggestion: "Customer said 'that sounds good'. High buying intent detected. Present quote with value breakdown.",
+        nextActions: [
+          {
+            id: "present-quote",
+            label: "Break down all-inclusive value",
+            description: "Show what's included vs competitors",
+            priority: "recommended",
+            confidence: 0.93,
+            reasoning: "Detailed value breakdown increases conversion by 31%"
+          },
+          {
+            id: "offer-payment-plan",
+            label: "Mention flexible payment options",
+            description: "Low deposit, pay over time available",
+            priority: "recommended",
+            confidence: 0.87,
+            reasoning: "Reduces price objections by addressing affordability"
+          },
+          {
+            id: "create-urgency",
+            label: "Note limited availability",
+            description: "Only 3 rooms left for these dates",
+            priority: "optional",
+            confidence: 0.79,
+          },
+        ],
+        script: "For your family of 4 in December, the total is $4,850 for 7 nights - that includes all meals, premium drinks, water sports, kids' activities, and entertainment. With our kids-stay-free promotion, you're saving $1,200!",
+        tips: [
+          "Frame as 'per person per night' to make it feel affordable",
+          "Compare to alternative vacation costs (airfare + hotel + food)",
+          "Ask if they want to secure the reservation"
+        ]
+      },
+      4: {
+        stage: "Closing & Follow-up",
+        description: "Confirm booking and set expectations",
+        aiSuggestion: "Customer ready to book! Collect payment details and send confirmation.",
+        nextActions: [
+          {
+            id: "collect-payment",
+            label: "Process reservation",
+            description: "Secure payment and send confirmation email",
+            priority: "critical",
+            confidence: 0.97,
+          },
+          {
+            id: "set-expectations",
+            label: "Explain next steps",
+            description: "Check-in process, what to bring, pre-arrival info",
+            priority: "recommended",
+            confidence: 0.89,
+          },
+          {
+            id: "upsell-extras",
+            label: "Offer add-on experiences",
+            description: "Spa package, excursions, room upgrades",
+            priority: "optional",
+            confidence: 0.72,
+            reasoning: "Post-booking upsells have 35% acceptance rate"
+          },
+        ],
+        script: "Wonderful! Let me get your reservation confirmed. You'll receive an email with all the details and a link to manage your booking. Is there anything else I can help with?",
+        tips: [
+          "Thank them for choosing Palace Resorts",
+          "Mention post-booking concierge services",
+          "Ask for referrals if conversation went well"
+        ]
+      },
+    }
+
+    return stageData[currentStageIndex] || stageData[0]
+  }, [currentStageIndex])
 
   // Get paths for current stage
   const currentPaths = PATHS_BY_STAGE[currentStageIndex] || []
@@ -268,25 +446,26 @@ export default function Index() {
     })
   }, [currentStageIndex, calculateConversationHealth])
 
-  const handleFollowPath = useCallback((pathId: string) => {
-    // TODO: Implement path following logic
-    // This will integrate with the Palace API to execute recommended actions
-  }, [])
-
-  const handleAction = useCallback((pathId: string, actionLabel: string) => {
+  const handleActionClick = useCallback((actionId: string) => {
     // TODO: Implement action handling logic
     // This will trigger specific actions like checking availability, generating quotes, etc.
+    console.log("Action clicked:", actionId)
+  }, [])
+
+  const handleFeedback = useCallback((actionId: string, positive: boolean) => {
+    // TODO: Track agent feedback for ML improvement
+    console.log("Feedback:", actionId, positive ? "👍" : "👎")
   }, [])
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="h-screen bg-gray-50 flex flex-col overflow-hidden">
       {/* Header */}
-      <div className="bg-white border-b sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 py-6">
+      <div className="bg-white border-b flex-shrink-0">
+        <div className="max-w-7xl mx-auto px-4 py-3">
           <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold text-gray-900">CloseLoop</h1>
-              <p className="text-gray-600 mt-1">AI-Powered Call Center Copilot</p>
+            <div className="flex items-center gap-3">
+              <h1 className="text-xl font-bold text-gray-900">CloseLoop</h1>
+              <span className="text-sm text-gray-500">AI Call Center Copilot</span>
             </div>
             {audioFile && (
               <button
@@ -297,7 +476,7 @@ export default function Index() {
                   setIsPlaying(false)
                   setConversationHealth(75)
                 }}
-                className="px-4 py-2 text-sm text-gray-600 hover:text-gray-900 border rounded-lg hover:bg-gray-50"
+                className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 border rounded-lg hover:bg-gray-50"
               >
                 Upload New Audio
               </button>
@@ -306,9 +485,11 @@ export default function Index() {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto px-4 py-8">
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <div className="max-w-7xl mx-auto px-4 py-6 h-full flex flex-col">
         {/* Audio Upload Section */}
         {!audioFile && (
+          <div className="flex-1 overflow-auto">
           <div className="max-w-2xl mx-auto">
             <div className="text-center mb-8">
               <h2 className="text-2xl font-semibold text-gray-900 mb-3">
@@ -342,13 +523,14 @@ export default function Index() {
               </ol>
             </div>
           </div>
+          </div>
         )}
 
         {/* Main Demo Interface */}
         {audioFile && (
-          <div className="grid lg:grid-cols-2 gap-6 h-[calc(100vh-12rem)]">
+          <div className="grid lg:grid-cols-2 gap-6 flex-1 min-h-0">
             {/* Left Column: Audio Player & Transcript */}
-            <div className="flex flex-col gap-6 h-full overflow-hidden">
+            <div className="flex flex-col gap-6 min-h-0">
               <div className="flex-shrink-0">
                 <AudioPlaybackSimulator
                   audioFile={audioFile}
@@ -359,7 +541,7 @@ export default function Index() {
                 />
               </div>
 
-              <div className="flex-1 min-h-0 overflow-hidden">
+              <div className="flex-1 min-h-0">
                 <LiveTranscript
                   entries={transcriptEntries}
                   isListening={isPlaying}
@@ -372,17 +554,19 @@ export default function Index() {
               </div>
             </div>
 
-            {/* Right Column: Conversation Navigator */}
-            <div className="h-full overflow-y-auto">
-              <ConversationNavigator
+            {/* Right Column: AI Copilot */}
+            <div className="min-h-0">
+              <AgentCopilot
                 stages={stages}
-                currentStagePaths={currentPaths}
-                onFollowPath={handleFollowPath}
-                onAction={handleAction}
+                currentStep={currentStepData}
+                conversationHealth={conversationHealth}
+                onActionClick={handleActionClick}
+                onFeedback={handleFeedback}
               />
             </div>
           </div>
         )}
+        </div>
       </div>
     </div>
   )
