@@ -3,7 +3,8 @@ import { useState, useCallback, useMemo } from "react"
 import { AudioUpload } from "~/components/audio/audio-upload"
 import { AudioPlaybackSimulator } from "~/components/audio/audio-playback-simulator"
 import { LiveTranscriptImproved as LiveTranscript, type TranscriptEntry } from "~/components/audio/live-transcript-improved"
-import { AgentCopilot, type ConversationStage, type CurrentStepData, type NextAction } from "~/components/copilot"
+import { AgentCopilot, type CurrentStepData } from "~/components/copilot"
+import type { AgentState, ConversationStage } from "~/lib/agent/state"
 
 export function meta({}: Route.MetaArgs) {
   return [
@@ -12,363 +13,131 @@ export function meta({}: Route.MetaArgs) {
   ];
 }
 
-// Static conversation paths (moved outside component for performance)
-const PATHS_BY_STAGE: Record<number, ConversationPathData[]> = {
-  0: [
-    {
-      id: "greeting-standard",
-      label: "Standard Greeting",
-      probability: 90,
-      recommended: true,
-      icon: "check",
-      steps: [
-        "Greet warmly and introduce yourself",
-        "Ask how you can help today",
-        "Listen actively to customer needs",
-      ],
-      script:
-        "Good morning! Thank you for calling Palace Resorts. My name is Sarah. How can I help make your vacation dreams come true today?",
-      actions: [{ label: "Follow This Path", variant: "default" }],
-    },
-  ],
-  1: [
-    {
-      id: "assess-family",
-      label: "Family Vacation Assessment",
-      probability: 85,
-      recommended: true,
-      icon: "check",
-      steps: [
-        "Ask about travel dates and flexibility",
-        "Identify number of travelers and ages",
-        "Understand budget expectations",
-        "Note special occasions or preferences",
-      ],
-      script:
-        "I'd love to help you plan the perfect family vacation! Can you tell me when you're looking to travel and how many people will be joining you?",
-      actions: [
-        { label: "Follow This Path", variant: "default" },
-        { label: "Ask About Budget", variant: "outline" },
-      ],
-    },
-  ],
-  2: [
-    {
-      id: "recommend-beach-palace",
-      label: "Recommend Beach Palace Cancún",
-      probability: 85,
-      recommended: true,
-      icon: "check",
-      steps: [
-        "Highlight family-friendly amenities",
-        "Mention current kids-stay-free promotion",
-        "Check availability for requested dates",
-        "Prepare customized quote",
-      ],
-      script:
-        "Based on what you've shared, Beach Palace Cancún would be perfect for your family! It's in the heart of the Hotel Zone with beautiful beaches. We have a kids-stay-free promotion that could save you up to 40%. Let me check availability for December.",
-      actions: [
-        { label: "Follow This Path", variant: "default" },
-        { label: "Check Availability", variant: "outline" },
-      ],
-    },
-    {
-      id: "compare-properties",
-      label: "Compare Multiple Properties",
-      probability: 60,
-      recommended: false,
-      icon: "info",
-      steps: [
-        "Present 2-3 property options",
-        "Highlight unique features of each",
-        "Compare pricing and value",
-        "Let customer choose",
-      ],
-      script:
-        "I can show you a few excellent options! Beach Palace is great for families, while Moon Palace has an amazing water park. Le Blanc is adults-only luxury. Which sounds most appealing?",
-      actions: [
-        { label: "Follow This Path", variant: "default" },
-        { label: "Show Comparison", variant: "secondary" },
-      ],
-    },
-  ],
-  3: [
-    {
-      id: "present-quote",
-      label: "Present Quote with Value",
-      probability: 80,
-      recommended: true,
-      icon: "check",
-      steps: [
-        "Break down all-inclusive value",
-        "Highlight current promotions",
-        "Offer payment plan options",
-        "Create urgency with limited availability",
-      ],
-      script:
-        "For your family of 4 in December, the total is $4,850 for 7 nights - that includes all meals, premium drinks, water sports, kids' activities, and entertainment. With our kids-stay-free promotion, you're saving $1,200! We only have 3 rooms left for those dates.",
-      actions: [
-        { label: "Follow This Path", variant: "default" },
-        { label: "Send Quote", variant: "outline" },
-        { label: "Adjust Dates", variant: "secondary" },
-      ],
-    },
-  ],
+// Helper functions for stage data
+function getStageDescription(stageIndex: number): string {
+  const descriptions = [
+    "Establish rapport and identify customer needs",
+    "Gather travel details and preferences",
+    "Match customer needs to ideal property",
+    "Present value and close the booking",
+    "Confirm booking and set expectations",
+  ]
+  return descriptions[stageIndex] || descriptions[0]
+}
+
+function getTipsForStage(stageIndex: number): string[] {
+  const tips: Record<number, string[]> = {
+    0: [
+      "Smile while speaking - it changes your tone",
+      "Use customer's name if you have it",
+      "Listen for emotional cues (excitement, hesitation)",
+    ],
+    1: [
+      "Ask about special occasions (anniversary, birthday)",
+      "Note dietary restrictions or accessibility needs",
+      "Capture budget range without being pushy",
+    ],
+    2: [
+      "Use words like 'perfect for your family' to personalize",
+      "Mention 2-3 key amenities that match their needs",
+      "Create urgency with limited availability or expiring promos",
+    ],
+    3: [
+      "Frame as 'per person per night' to make it feel affordable",
+      "Compare to alternative vacation costs (airfare + hotel + food)",
+      "Ask if they want to secure the reservation",
+    ],
+    4: [
+      "Thank them for choosing Palace Resorts",
+      "Mention post-booking concierge services",
+      "Ask for referrals if conversation went well",
+    ],
+  }
+  return tips[stageIndex] || []
 }
 
 export default function Index() {
   const [audioFile, setAudioFile] = useState<File | null>(null)
   const [transcriptEntries, setTranscriptEntries] = useState<TranscriptEntry[]>([])
   const [currentTime, setCurrentTime] = useState(0)
-  const [currentStageIndex, setCurrentStageIndex] = useState(0)
   const [isPlaying, setIsPlaying] = useState(false)
   const [conversationHealth, setConversationHealth] = useState(75)
 
-  // Conversation stages (memoized to avoid recreating on every render)
-  const stages = useMemo<ConversationStage[]>(() => [
-    {
-      id: "greeting",
-      label: "Initial Greeting",
-      status: currentStageIndex > 0 ? "completed" : "current",
-    },
-    {
-      id: "needs-assessment",
-      label: "Needs Assessment",
-      status: currentStageIndex > 1 ? "completed" : currentStageIndex === 1 ? "current" : "future",
-    },
-    {
-      id: "property-selection",
-      label: "Property Selection",
-      status: currentStageIndex > 2 ? "completed" : currentStageIndex === 2 ? "current" : "future",
-    },
-    {
-      id: "pricing-quote",
-      label: "Pricing & Quote",
-      status: currentStageIndex > 3 ? "completed" : currentStageIndex === 3 ? "current" : "future",
-    },
-    {
-      id: "closing",
-      label: "Closing & Follow-up",
-      status: currentStageIndex === 4 ? "current" : "future",
-    },
-  ], [currentStageIndex])
+  // AI Agent state (replaces static currentStepData)
+  const [agentState, setAgentState] = useState<Partial<AgentState>>({})
 
-  // Current step data based on stage (memoized)
-  const currentStepData = useMemo<CurrentStepData>(() => {
-    const stageData: Record<number, CurrentStepData> = {
-      0: {
-        stage: "Initial Greeting",
-        description: "Establish rapport and identify customer needs",
-        aiSuggestion: "Customer just joined. Start with warm greeting and open-ended question.",
-        nextActions: [
-          {
-            id: "greet",
-            label: "Introduce yourself warmly",
-            description: "Use customer's name if available",
-            priority: "recommended",
-            confidence: 0.95,
-            reasoning: "Building rapport increases booking probability by 23%"
-          },
-          {
-            id: "ask-help",
-            label: "Ask how you can help",
-            description: "Use open-ended question to uncover needs",
-            priority: "recommended",
-            confidence: 0.92,
-          },
-        ],
-        script: "Good morning! Thank you for calling Palace Resorts. My name is Sarah. How can I help make your vacation dreams come true today?",
-        tips: [
-          "Smile while speaking - it changes your tone",
-          "Use customer's name if you have it",
-          "Listen for emotional cues (excitement, hesitation)"
-        ]
-      },
-      1: {
-        stage: "Needs Assessment",
-        description: "Gather travel details and preferences",
-        aiSuggestion: "Customer mentioned 'family vacation'. Focus on family-friendly options and kids activities.",
-        nextActions: [
-          {
-            id: "ask-dates",
-            label: "Confirm travel dates",
-            description: "Ask about flexibility if dates are tight",
-            priority: "critical",
-            confidence: 0.98,
-            reasoning: "Date availability is the primary booking constraint"
-          },
-          {
-            id: "ask-guests",
-            label: "Identify number of travelers",
-            description: "Include ages of children for room planning",
-            priority: "critical",
-            confidence: 0.96,
-          },
-          {
-            id: "ask-budget",
-            label: "Understand budget expectations",
-            description: "Frame as 'investment in memories' not cost",
-            priority: "recommended",
-            confidence: 0.85,
-            reasoning: "Knowing budget early prevents mismatched expectations"
-          },
-        ],
-        script: "I'd love to help you plan the perfect family vacation! Can you tell me when you're looking to travel and how many people will be joining you?",
-        tips: [
-          "Ask about special occasions (anniversary, birthday)",
-          "Note dietary restrictions or accessibility needs",
-          "Capture budget range without being pushy"
-        ]
-      },
-      2: {
-        stage: "Property Selection",
-        description: "Match customer needs to ideal property",
-        aiSuggestion: "Customer has 2 kids (ages 8, 12) and mentioned 'beach'. Recommend Beach Palace with kids-stay-free promo.",
-        nextActions: [
-          {
-            id: "recommend-property",
-            label: "Suggest Beach Palace Cancún",
-            description: "Highlight family amenities and current promotion",
-            priority: "recommended",
-            confidence: 0.88,
-            reasoning: "95% match based on: family size, budget, preferences"
-          },
-          {
-            id: "check-availability",
-            label: "Check room availability",
-            description: "For requested dates (Dec 15-22)",
-            priority: "critical",
-            confidence: 0.94,
-          },
-          {
-            id: "mention-promo",
-            label: "Highlight kids-stay-free offer",
-            description: "Save up to 40% - expires end of month",
-            priority: "recommended",
-            confidence: 0.91,
-            reasoning: "Creates urgency and demonstrates value"
-          },
-        ],
-        script: "Based on what you've shared, Beach Palace Cancún would be perfect for your family! It's in the heart of the Hotel Zone with beautiful beaches. We have a kids-stay-free promotion that could save you up to 40%.",
-        tips: [
-          "Use words like 'perfect for your family' to personalize",
-          "Mention 2-3 key amenities that match their needs",
-          "Create urgency with limited availability or expiring promos"
-        ]
-      },
-      3: {
-        stage: "Pricing & Quote",
-        description: "Present value and close the booking",
-        aiSuggestion: "Customer said 'that sounds good'. High buying intent detected. Present quote with value breakdown.",
-        nextActions: [
-          {
-            id: "present-quote",
-            label: "Break down all-inclusive value",
-            description: "Show what's included vs competitors",
-            priority: "recommended",
-            confidence: 0.93,
-            reasoning: "Detailed value breakdown increases conversion by 31%"
-          },
-          {
-            id: "offer-payment-plan",
-            label: "Mention flexible payment options",
-            description: "Low deposit, pay over time available",
-            priority: "recommended",
-            confidence: 0.87,
-            reasoning: "Reduces price objections by addressing affordability"
-          },
-          {
-            id: "create-urgency",
-            label: "Note limited availability",
-            description: "Only 3 rooms left for these dates",
-            priority: "optional",
-            confidence: 0.79,
-          },
-        ],
-        script: "For your family of 4 in December, the total is $4,850 for 7 nights - that includes all meals, premium drinks, water sports, kids' activities, and entertainment. With our kids-stay-free promotion, you're saving $1,200!",
-        tips: [
-          "Frame as 'per person per night' to make it feel affordable",
-          "Compare to alternative vacation costs (airfare + hotel + food)",
-          "Ask if they want to secure the reservation"
-        ]
-      },
-      4: {
-        stage: "Closing & Follow-up",
-        description: "Confirm booking and set expectations",
-        aiSuggestion: "Customer ready to book! Collect payment details and send confirmation.",
-        nextActions: [
-          {
-            id: "collect-payment",
-            label: "Process reservation",
-            description: "Secure payment and send confirmation email",
-            priority: "critical",
-            confidence: 0.97,
-          },
-          {
-            id: "set-expectations",
-            label: "Explain next steps",
-            description: "Check-in process, what to bring, pre-arrival info",
-            priority: "recommended",
-            confidence: 0.89,
-          },
-          {
-            id: "upsell-extras",
-            label: "Offer add-on experiences",
-            description: "Spa package, excursions, room upgrades",
-            priority: "optional",
-            confidence: 0.72,
-            reasoning: "Post-booking upsells have 35% acceptance rate"
-          },
-        ],
-        script: "Wonderful! Let me get your reservation confirmed. You'll receive an email with all the details and a link to manage your booking. Is there anything else I can help with?",
-        tips: [
-          "Thank them for choosing Palace Resorts",
-          "Mention post-booking concierge services",
-          "Ask for referrals if conversation went well"
-        ]
-      },
+  // Agent call management (debouncing + cancellation)
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const maxWaitTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const pendingMessagesRef = useRef<TranscriptEntry[]>([])
+
+  // Conversation stages come directly from agent (dynamically generated)
+  const stages = useMemo<ConversationStage[]>(() => {
+    return agentState.conversationStages || []
+  }, [agentState.conversationStages])
+
+  // Current step data - use AI agent state if available, otherwise show empty state
+  const currentStepData = useMemo<CurrentStepData | null>(() => {
+    // Don't show anything until we have transcript entries
+    if (transcriptEntries.length === 0) {
+      return null
     }
 
-    return stageData[currentStageIndex] || stageData[0]
-  }, [currentStageIndex])
+    // If agent has generated suggestions, use them
+    if (agentState.nextActions && agentState.nextActions.length > 0) {
+      const currentStage = stages.find(s => s.status === "current")
 
-  // Get paths for current stage
-  const currentPaths = PATHS_BY_STAGE[currentStageIndex] || []
-
-  // Calculate conversation health based on various metrics
-  const calculateConversationHealth = useCallback((entries: TranscriptEntry[]) => {
-    if (entries.length === 0) return 75 // Default starting health
-
-    let health = 100
-
-    // Factor 1: Average confidence score (lower confidence = worse health)
-    const avgConfidence = entries.reduce((sum, e) => sum + (e.confidence || 0), 0) / entries.length
-    health -= (1 - avgConfidence) * 20 // Reduce up to 20 points for low confidence
-
-    // Factor 2: Sentiment analysis (if available)
-    const negativeCount = entries.filter(e => e.sentiment === "negative" || e.sentiment === "concerned").length
-    health -= (negativeCount / entries.length) * 30 // Reduce up to 30 points for negative sentiment
-
-    // Factor 3: Agent-to-customer ratio (good conversations have balanced turns)
-    const agentCount = entries.filter(e => e.speaker === "agent").length
-    const customerCount = entries.filter(e => e.speaker === "customer").length
-    const ratio = customerCount > 0 ? agentCount / customerCount : 1
-    if (ratio > 3 || ratio < 0.3) {
-      health -= 15 // Reduce 15 points if conversation is too one-sided
+      return {
+        stage: agentState.currentStage || currentStage?.label || "In Progress",
+        description: currentStage?.description || "AI is analyzing the conversation...",
+        aiSuggestion: agentState.reasoning || undefined,
+        nextActions: agentState.nextActions,
+        script: agentState.nextActions[0]?.description,
+        tips: [], // Tips can be generated by agent if needed
+      }
     }
 
-    // Clamp between 0 and 100
-    return Math.max(0, Math.min(100, Math.round(health)))
-  }, [])
+    // If no agent data yet, return null (shows waiting state in copilot)
+    return null
+  }, [agentState, stages, transcriptEntries.length])
 
   // Handle file selection
   const handleFileSelect = useCallback((file: File) => {
     setAudioFile(file)
     setTranscriptEntries([])
-    setCurrentStageIndex(0)
     setIsPlaying(false)
-    setConversationHealth(75) // Reset health
+    setConversationHealth(75)
+    setAgentState({}) // Reset agent state
   }, [])
+
+  // Call AI Agent to analyze conversation and generate suggestions
+  const callAgent = useCallback(async (newEntry: TranscriptEntry) => {
+    try {
+      const response = await fetch("/api/agent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: {
+            speaker: newEntry.speaker,
+            text: newEntry.text,
+            timestamp: newEntry.timestamp,
+          },
+          currentState: agentState,
+        }),
+      })
+
+      if (response.ok) {
+        const { state } = await response.json()
+        setAgentState(state)
+
+        // Update UI with agent's analysis
+        setConversationHealth(state.healthScore || 75)
+      }
+    } catch (error) {
+      console.error("Agent call failed:", error)
+    }
+  }, [agentState])
 
   // Handle transcript updates from playback
   const handleTranscriptUpdate = useCallback((event: any) => {
@@ -405,6 +174,9 @@ export default function Index() {
           confidence: (lastEntry.confidence! + event.confidence) / 2, // Average confidence
         }
 
+        // Call agent with merged message
+        callAgent(mergedEntry)
+
         // Replace last entry with merged one
         return [...prev.slice(0, -1), mergedEntry]
       }
@@ -421,30 +193,12 @@ export default function Index() {
 
       const newEntries = [...prev, newEntry]
 
-      // Progress stages based on conversation flow (count unique speaker turns, not total messages)
-      const speakerTurns = newEntries.reduce((count, entry, index) => {
-        if (index === 0 || entry.speaker !== newEntries[index - 1].speaker) {
-          return count + 1
-        }
-        return count
-      }, 0)
-
-      if (speakerTurns >= 2 && currentStageIndex === 0) {
-        setCurrentStageIndex(1)
-      } else if (speakerTurns >= 4 && currentStageIndex === 1) {
-        setCurrentStageIndex(2)
-      } else if (speakerTurns >= 6 && currentStageIndex === 2) {
-        setCurrentStageIndex(3)
-      } else if (speakerTurns >= 8 && currentStageIndex === 3) {
-        setCurrentStageIndex(4)
-      }
-
-      // Update conversation health based on new entries
-      setConversationHealth(calculateConversationHealth(newEntries))
+      // Call AI agent to analyze the new message
+      callAgent(newEntry)
 
       return newEntries
     })
-  }, [currentStageIndex, calculateConversationHealth])
+  }, [callAgent])
 
   const handleActionClick = useCallback((actionId: string) => {
     // TODO: Implement action handling logic
@@ -469,12 +223,13 @@ export default function Index() {
             </div>
             {audioFile && (
               <button
+                type="button"
                 onClick={() => {
                   setAudioFile(null)
                   setTranscriptEntries([])
-                  setCurrentStageIndex(0)
                   setIsPlaying(false)
                   setConversationHealth(75)
+                  setAgentState({})
                 }}
                 className="px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 border rounded-lg hover:bg-gray-50"
               >
@@ -547,7 +302,7 @@ export default function Index() {
                   isListening={isPlaying}
                   currentTime={currentTime}
                   conversationHealth={conversationHealth}
-                  currentStage={stages[currentStageIndex]?.label || "Initial Assessment"}
+                  currentStage={agentState.currentStage || stages.find(s => s.status === "current")?.label || "In Progress"}
                   autoScroll={true}
                   showConfidence={true}
                 />

@@ -44,7 +44,7 @@ export interface CurrentStepData {
 
 interface AgentCopilotProps {
   stages: ConversationStage[]
-  currentStep: CurrentStepData
+  currentStep: CurrentStepData | null
   conversationHealth?: number
   onActionClick?: (actionId: string) => void
   onFeedback?: (actionId: string, positive: boolean) => void
@@ -57,6 +57,49 @@ export function AgentCopilot({
   onActionClick,
   onFeedback,
 }: AgentCopilotProps) {
+  // Show waiting state if no conversation data yet
+  if (!currentStep) {
+    return (
+      <div className="h-full flex flex-col bg-gray-50 border-l border-gray-200">
+        {/* Header */}
+        <div className="flex-shrink-0 bg-white border-b border-gray-200 px-4 py-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-purple-600" />
+              <h2 className="text-lg font-semibold text-gray-900">AI Copilot</h2>
+            </div>
+          </div>
+          <p className="text-xs text-gray-600">
+            Real-time guidance powered by AI
+          </p>
+        </div>
+
+        {/* Waiting State */}
+        <div className="flex-1 flex items-center justify-center px-4 py-8">
+          <div className="text-center max-w-sm">
+            <div className="mb-4 flex justify-center">
+              <div className="relative">
+                <Sparkles className="h-12 w-12 text-purple-300 animate-pulse" />
+              </div>
+            </div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">
+              Waiting for conversation...
+            </h3>
+            <p className="text-sm text-gray-600">
+              The AI copilot will analyze the conversation and provide real-time suggestions as the call progresses.
+            </p>
+          </div>
+        </div>
+
+        {/* Footer */}
+        <div className="flex-shrink-0 bg-white border-t border-gray-200 px-4 py-2">
+          <p className="text-xs text-gray-500 text-center">
+            Powered by Claude 3.5 Haiku
+          </p>
+        </div>
+      </div>
+    )
+  }
   const [expandedSections, setExpandedSections] = useState({
     progress: true,
     currentStep: true,
@@ -131,33 +174,34 @@ export function AgentCopilot({
 
       {/* Scrollable Content */}
       <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-        {/* Progress Section */}
-        <Card>
-          <CardHeader
-            className="cursor-pointer py-3"
-            onClick={() => toggleSection("progress")}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                {expandedSections.progress ? (
-                  <ChevronDown className="h-4 w-4 text-gray-500" />
-                ) : (
-                  <ChevronRight className="h-4 w-4 text-gray-500" />
-                )}
-                <CardTitle className="text-sm font-medium">
-                  Conversation Progress
-                </CardTitle>
+        {/* Progress Section - only show if stages exist */}
+        {stages.length > 0 && (
+          <Card>
+            <CardHeader
+              className="cursor-pointer py-3"
+              onClick={() => toggleSection("progress")}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  {expandedSections.progress ? (
+                    <ChevronDown className="h-4 w-4 text-gray-500" />
+                  ) : (
+                    <ChevronRight className="h-4 w-4 text-gray-500" />
+                  )}
+                  <CardTitle className="text-sm font-medium">
+                    Conversation Progress
+                  </CardTitle>
+                </div>
+                <Badge variant="secondary" className="text-xs">
+                  {stages.filter((s) => s.status === "completed").length}/
+                  {stages.length}
+                </Badge>
               </div>
-              <Badge variant="secondary" className="text-xs">
-                {stages.filter((s) => s.status === "completed").length}/
-                {stages.length}
-              </Badge>
-            </div>
-          </CardHeader>
-          {expandedSections.progress && (
-            <CardContent className="pt-0 pb-4">
-              <div className="space-y-2">
-                {stages.map((stage, index) => (
+            </CardHeader>
+            {expandedSections.progress && (
+              <CardContent className="pt-0 pb-4">
+                <div className="space-y-2">
+                  {stages.map((stage, index) => (
                   <div key={stage.id} className="flex items-start gap-3">
                     <div className="flex flex-col items-center">
                       {stage.status === "completed" ? (
@@ -204,7 +248,8 @@ export function AgentCopilot({
               </div>
             </CardContent>
           )}
-        </Card>
+          </Card>
+        )}
 
         {/* Current Step Section */}
         <Card className="border-blue-200 bg-blue-50">
