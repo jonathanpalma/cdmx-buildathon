@@ -38,6 +38,15 @@ Agents need **real-time support**, not replacement. The copilot must **listen, g
 
 ---
 
+## 🎥 Demo Videos
+
+Watch our AI copilot in action:
+
+- **[Demo 01](./Demo01.mov)** - Real-time agent assistance during a customer call
+- **[Demo 02](./Demo02.mov)** - Complete sales journey with follow-up automation
+
+---
+
 ## 📁 Project Structure
 
 This repository contains two main components:
